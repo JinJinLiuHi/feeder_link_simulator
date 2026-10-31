@@ -1,0 +1,36 @@
+# Python bytecode and caches (all subdirectories)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local Python environments
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# Generated simulation outputs and orbit cache
+/simulation_results/
+/simulation_scenarios/
+/constellation_sim/ui/cache/
+*.hysim
+*.log
+
+# Local editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+~$*

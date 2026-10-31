@@ -120,5 +120,3 @@ visibility = {
 result = model.run_frame(
     datetime.now(timezone.utc), visibility
 )
-```
-
