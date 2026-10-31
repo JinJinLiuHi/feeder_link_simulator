@@ -1,0 +1,7 @@
+modcod,minimum_snr_db,spectral_efficiency,rate_gbps
+QPSK 1/4,-2.35,0.49,
+QPSK 1/2,1.0,1.0,
+QPSK 3/4,3.0,1.5,
+8PSK 2/3,6.0,2.0,
+16APSK 3/4,9.0,3.0,
+32APSK 4/5,13.0,4.0,

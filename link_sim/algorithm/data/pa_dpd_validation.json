@@ -1,0 +1,81 @@
+{
+  "metrics": {
+    "before": {
+      "rmsPercent": 16.821251996559873,
+      "nmseDb": -15.482833660700472,
+      "lowerAcprDb": -33.927855506419476,
+      "upperAcprDb": -34.603484942411875,
+      "powerDbm": 25.829251138132108,
+      "amRmsPercent": 9.737332048000953,
+      "pmRmsDeg": 6.238660148927761,
+      "evmPercent": 16.579027517021352,
+      "evmSymbols": 7
+    },
+    "after": {
+      "rmsPercent": 0.864140114642451,
+      "nmseDb": -41.26831667629048,
+      "lowerAcprDb": -43.31253247854023,
+      "upperAcprDb": -43.45998657386935,
+      "powerDbm": 25.037684908271967,
+      "amRmsPercent": 0.5761948289974974,
+      "pmRmsDeg": 1.0148052379534336,
+      "evmPercent": 0.6033516984364001,
+      "evmSymbols": 7
+    },
+    "drive": {
+      "rms": 0.23998112577136685,
+      "peak": 0.8803087479436407,
+      "paprDb": 11.28915862609494,
+      "peakLimit": 2.400088,
+      "outOfRangePercent": 0.0
+    },
+    "lowerAcprImprovementDb": 9.38467697212075,
+    "upperAcprImprovementDb": 8.856501631457476
+  },
+  "dpdInfo": {
+    "solver": "column_scaled_tsvd",
+    "rcond": 0.0001,
+    "rank": 15,
+    "terms": 15,
+    "trainingRmsPercent": 0.7092413302846376,
+    "inputRms": 0.26219938536424237,
+    "inputPeak": 0.8344388975088708,
+    "conditionNumber": 3137.0137796021277,
+    "algorithm": "ILA",
+    "gainReal": 20.65623358699128,
+    "gainImag": 6.0124607358998405,
+    "paSignature": "5842c950f2a0140b85822880595e15223ded6e4f85209e42256deb670370a77f",
+    "history": [
+      {
+        "iteration": 1,
+        "rmsPercent": 0.7585763444948406,
+        "peak": 0.7852723156775712,
+        "accepted": true,
+        "inRange": true
+      },
+      {
+        "iteration": 2,
+        "rmsPercent": 0.7376887236791372,
+        "peak": 0.7877327932392718,
+        "accepted": true,
+        "inRange": true
+      },
+      {
+        "iteration": 3,
+        "rmsPercent": 0.7404680926680415,
+        "peak": 0.787584315868109,
+        "accepted": false,
+        "inRange": true
+      }
+    ],
+    "validationRmsPercent": 0.7376887236791372,
+    "baselineValidationRmsPercent": 17.142800563447476,
+    "peakLimit": 2.400088,
+    "trainingSamples": 16000,
+    "validationSamples": 16000,
+    "acquisitionDelay": 0,
+    "trainingSource": "model",
+    "improved": true
+  },
+  "testSamples": 245504
+}

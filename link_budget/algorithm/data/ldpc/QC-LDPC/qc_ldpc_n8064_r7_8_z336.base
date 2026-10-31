@@ -1,0 +1,9 @@
+# QC-LDPC base parity-check matrix supplied as C.3
+# Expanded shape: 1008 x 8064; nominal rate: 7/8
+# The supplied first row contained 27 values. To restore the documented 3x24
+# base-matrix shape, the intervening surplus triplet "238 0 309" was removed;
+# the final parity part "0 0 -1" was retained.
+Z 336
+1 189 27 25 216 157 20 300 95 134 275 148 279 33 61 134 156 67 0 213 0 0 0 -1
+73 278 49 188 266 260 138 49 221 234 290 289 219 232 200 44 98 0 198 79 162 109 0 0
+273 325 13 273 17 14 51 256 196 4 253 35 201 294 34 99 17 13 324 8 88 0 -1 0

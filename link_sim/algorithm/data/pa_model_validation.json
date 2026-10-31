@@ -1,0 +1,40 @@
+{
+  "originalSHA256": "e7a79199af86bc87a25c7647c93654e305149683930473048b734ce3760c4df9",
+  "sampleRate": 860160000.0,
+  "measuredSamples": 48384,
+  "ofdmSamples": 920640,
+  "old": {
+    "maxCoefficient": 1892464.772700102,
+    "fullRmsPercent": 2.298237237737489,
+    "validationRmsPercent": 2.390184811471076,
+    "ofdmOutput": {
+      "rms": 87.648652320322,
+      "peak": 51605.55545816988
+    }
+  },
+  "corrected": {
+    "maxCoefficient": 17.920905186831224,
+    "fullRmsPercent": 2.362481081473419,
+    "validationRmsPercent": 2.3785360754682214,
+    "ofdmOutput": {
+      "rms": 6.200263038061163,
+      "peak": 22.56983866069312
+    },
+    "fitInfo": {
+      "solver": "column_scaled_tsvd",
+      "rcond": 0.0001,
+      "rank": 190,
+      "terms": 505,
+      "trainingRmsPercent": 2.3472180151556667,
+      "inputRms": 0.7991213070742763,
+      "inputPeak": 2.400088243753321,
+      "conditionNumber": 20717188426.93749,
+      "validationRmsPercent": 2.3785360754682214,
+      "validationSamples": 24164
+    }
+  },
+  "ofdmInput": {
+    "rms": 0.26313943305989695,
+    "peak": 1.0
+  }
+}
