@@ -502,7 +502,7 @@ class PAModelDialog(ModuleDialog):
         self.txt_coef.setStyleSheet(
             "QPlainTextEdit{background:#091B29;border:1px solid #1C4961;"
             "border-radius:3px;font-family:Consolas,monospace;"
-            "font-size:8.5pt;color:#222;}")
+            "font-size:8.5pt;color:#C9E6F2;}")
         self.txt_coef.setPlainText("尚未拟合")
         cg.layout().addWidget(self.txt_coef)
         eh = QHBoxLayout(); eh.setSpacing(8)

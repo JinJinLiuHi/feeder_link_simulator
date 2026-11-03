@@ -520,6 +520,8 @@ class ADDAModelDialog(ModuleDialog):
             spine.set_color("#1C4961")
         ax.tick_params(labelsize=9)
         self.canvas.draw()
+        density_per_hz = 10 ** (metrics["noise_floor_dbfs"] / 10.0) / result["bin_width_hz"]
+        density_dbfs_hz = metrics["noise_floor_dbfs"] - 10 * np.log10(result["bin_width_hz"])
         self.status.setText(
             f"FFT bin 宽度 = {result['bin_width_hz']:.3f} Hz  |  "
             f"理论噪声底 = {result['noise_floor_theory_dbfs']:.2f} dBFS\n"
@@ -527,7 +529,9 @@ class ADDAModelDialog(ModuleDialog):
             f"SFDR = {metrics['SFDR']:.2f} dBFS "
             f"(最大杂散在 {self._format_frequency(metrics['largest_spur_freq'])}, "
             f"{metrics['largest_spur_dbfs']:.2f} dBFS)\n"
-            f"估计量化噪声基底 = {metrics['noise_floor_dbfs']:.2f} dBFS"
+            f"估计量化噪声基底 = {metrics['noise_floor_dbfs']:.2f} dBFS\n"
+            f"每 Hz 噪声功率密度 D_n = {density_per_hz:.6e} 归一化功率/Hz\n"
+            f"对应噪声密度 = {density_dbfs_hz:.4f} dBFS/Hz"
         )
 
     @staticmethod

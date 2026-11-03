@@ -11,6 +11,10 @@ conda activate hypatia-satgen
 python main.py
 ```
 
+新增“链路仿真 → 全链路波形仿真”发射端画布。首次使用请在同一 Python 环境运行
+`python -m pip install -r requirements-waveform.txt`。
+模块连线、模型加载、各级波形观察及 GNU Radio 可选后端说明见 [全链路波形仿真](WAVEFORM_SIMULATION.md)。
+
 ## 代码结构
 
 - `main.py`：程序启动入口，不承载业务实现。

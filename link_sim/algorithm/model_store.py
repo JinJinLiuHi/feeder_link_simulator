@@ -1,7 +1,7 @@
 """Versioned SQLite device library; model metadata and exact NPY array blobs."""
 
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import os
@@ -9,6 +9,17 @@ from pathlib import Path
 import sqlite3
 import numpy as np
 from .device_models import DeviceModel, KINDS, MAX_BYTES, json_text
+
+
+BEIJING_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def format_beijing_time(value):
+    """Render both historical UTC timestamps and new +08:00 timestamps."""
+    timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(BEIJING_TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def default_database_path():
@@ -84,7 +95,7 @@ class ModelStore:
                                   (model.kind, model.name)).fetchone()[0]
             cursor = db.execute("""INSERT INTO models(kind,name,revision,description,parameters_json,created_at,checksum)
                     VALUES(?,?,?,?,?,?,?)""", (model.kind, model.name, revision, model.description, parameters,
-                      datetime.now(timezone.utc).isoformat(timespec="microseconds"), checksum))
+                      datetime.now(BEIJING_TIMEZONE).isoformat(timespec="microseconds"), checksum))
             model_id = cursor.lastrowid
             db.executemany("INSERT INTO model_arrays(model_id,name,npy_data) VALUES(?,?,?)",
                            [(model_id, name, blob) for name, blob in blobs.items()])
@@ -99,8 +110,8 @@ class ModelStore:
             args.append(kind)
         if search:
             literal = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            clauses.append("(name LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\')")
-            args.extend(["%"+literal+"%"]*2)
+            clauses.append("name LIKE ? ESCAPE '\\'")
+            args.append("%"+literal+"%")
         query = "SELECT id,kind,name,revision,description,created_at FROM models"
         if clauses:
             query += " WHERE "+" AND ".join(clauses)

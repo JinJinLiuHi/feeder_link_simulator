@@ -1542,7 +1542,7 @@ class MainWindow(QMainWindow):
         self.project_buttons=[];self._project_titles={"calculation":"链路计算","simulation":"链路仿真","constellation":"星座仿真"};self._project_targets=[project]
         self._secondary_nav_containers={};self._secondary_nav_layouts={}
         for key,title in (("calculation","链路计算"),("simulation","链路仿真"),("constellation","星座仿真")):
-            button=QToolButton();button.setObjectName("verticalProjectTab");button.setText("\n".join(title));button.setCheckable(True);button.setFixedWidth(42);button.setMinimumHeight(96);button.clicked.connect(lambda checked,k=key:self._primary_workspace_clicked(k));self.project_rail_layout.addWidget(button);self.project_buttons.append(button)
+            button=QToolButton();button.setObjectName("verticalProjectTab");button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly);button.setText("\n".join(title));button.setCheckable(True);button.setFixedWidth(42);button.setMinimumHeight(96);button.clicked.connect(lambda checked,k=key:self._primary_workspace_clicked(k));self.project_rail_layout.addWidget(button);self.project_buttons.append(button)
             secondary=QWidget();secondary.setObjectName("secondaryProjectNav");secondary_layout=QVBoxLayout(secondary);secondary_layout.setContentsMargins(16,3,4,6);secondary_layout.setSpacing(2);secondary.hide();self.project_rail_layout.addWidget(secondary)
             self._secondary_nav_containers[key]=secondary;self._secondary_nav_layouts[key]=secondary_layout
         self.project_rail_layout.addStretch();self._active_project_index=0
@@ -1660,7 +1660,7 @@ class MainWindow(QMainWindow):
         # 显示选项改由 Cesium 地图右上角直接控制；控件保留为后台默认值。
         self.property_buttons=[]
         for index,title in enumerate(("星座建模","星间链路建模","信关站建模","业务建模","雨衰建模","规划调度")):
-            button=QToolButton(); button.setObjectName("verticalPropertyTab"); button.setText("\n".join(title)); button.setCheckable(True); button.setFixedWidth(42); button.setMinimumHeight(92); button.clicked.connect(lambda checked,i=index:self._select_property_drawer(i)); self.property_rail_layout.addWidget(button); self.property_buttons.append(button)
+            button=QToolButton(); button.setObjectName("verticalPropertyTab"); button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly); button.setText("\n".join(title)); button.setCheckable(True); button.setFixedWidth(42); button.setMinimumHeight(92); button.clicked.connect(lambda checked,i=index:self._select_property_drawer(i)); self.property_rail_layout.addWidget(button); self.property_buttons.append(button)
         self.property_rail_layout.addStretch(); self._active_property_index=0
         self.display_planes.setCurrentIndex(2)
         self.scenario_edit_widgets=[self.source,self.tle_path,self.browse_tle_btn,self.walker_mode,self.shell_count,self.shell_table,self.sat_count,self.planes,self.walker_layout,self.altitude,self.inclination,self.orbit_shape,self.eccentricity,self.arg_perigee,self.satellite_antennas,self.satellite_channels,self.satellite_channel_capacity,self.geo_interference,self.duration,self.step,self.isl_pattern,self.station_preset,self.add_station_btn,self.station_table,self.remove_station_btn,self.gateway_planning_enabled,self.gateway_planning_mode,self.gateway_max_sites,self.gateway_redundancy,self.gateway_max_antennas,self.elevation,self.max_gsl,self.gateway_eirp,self.gateway_gt,self.gateway_array_loss,self.lat_limit,self.max_isl,self.traffic_enabled,self.traffic_grid_path,self.browse_traffic_btn,self.traffic_dense_percentile,self.traffic_dense_max_satellites,self.traffic_cluster_radius,self.traffic_total_gbps,self.traffic_landing_percent,self.traffic_random_sigma,self.traffic_outside_china_percent,self.rain_enabled,self.rain_source,self.rain_sense,self.rain_forecast,self.rain_p90,self.planning_enabled,self.planning_period,self.planning_horizon,self.planning_slot,self.fast_evaluation_period,self.fast_adjust_period,self.route_update_period,self.planning_freeze_window,self.feeder_bandwidth,self.snr_margin,self.capacity_threshold,self.switching_loss,self.modcod_table_path,self.browse_modcod_btn]
@@ -1727,7 +1727,7 @@ class MainWindow(QMainWindow):
             group_buttons=[]
             for local_index,page_index in enumerate(indexes):
                 title=view_tabs._buttons[page_index].text()
-                button=QToolButton();button.setObjectName("secondaryProjectTab");button.setText(title);button.setCheckable(True);button.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed);button.setMinimumHeight(34)
+                button=QToolButton();button.setObjectName("secondaryProjectTab");button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly);button.setText(title);button.setCheckable(True);button.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed);button.setMinimumHeight(34)
                 button.clicked.connect(lambda checked,k=group,i=local_index:self._switch_primary_workspace(k,i,True))
                 self._secondary_button_group.addButton(button);self._secondary_nav_layouts[group].addWidget(button);group_buttons.append(button)
             self._secondary_workspace_buttons[group]=group_buttons
@@ -1793,6 +1793,7 @@ class MainWindow(QMainWindow):
             if expanded:button.setText(("▼  " if key==active else "▶  ")+self._project_titles[key])
             else:button.setText("\n".join(self._project_titles[key]))
             button.setFixedWidth(width-6 if expanded else 42);button.setMinimumHeight(44 if expanded else 96)
+        self._enforce_splitter_layout()
 
     def _switch_primary_workspace(self,key,index_in_group=0,expand_navigation=False):
         groups=getattr(self,"_workspace_groups",{})
@@ -1806,10 +1807,10 @@ class MainWindow(QMainWindow):
         self.view_tabs.setCurrentIndex(target)
         if key in self._secondary_workspace_buttons and self._secondary_workspace_buttons[key]:
             self._secondary_workspace_buttons[key][min(max(0,index_in_group),len(self._secondary_workspace_buttons[key])-1)].setChecked(True)
+        self.project_drawer.hide();self.project_panel.setProperty("drawerExpanded",False)
         self._set_secondary_navigation(expand_navigation)
         self.workspace_context_nav.setVisible(key=="constellation" and target==0)
         for pos,button in enumerate(self.project_buttons):button.setChecked((key==("calculation","simulation","constellation")[pos]))
-        self.project_drawer.hide();self.project_panel.setProperty("drawerExpanded",False)
         self.view_tabs._position_overlay_navigation()
 
     def _central_workspace_changed(self,index):
@@ -1873,7 +1874,8 @@ class MainWindow(QMainWindow):
         while parent is not None:parent.setExpanded(True); parent=parent.parent()
 
     def _update_project_buttons(self,expanded):
-        for i,button in enumerate(self.project_buttons):button.setChecked(expanded and i==self._active_project_index)
+        for key,button in zip(("calculation","simulation","constellation"),self.project_buttons):
+            button.setChecked(key==getattr(self,"_active_primary_workspace",None))
 
     def _set_project_drawer(self,expanded):
         if expanded:self._focus_project_target()
@@ -1897,13 +1899,16 @@ class MainWindow(QMainWindow):
         if expanded:
             drawer.show(); panel.setFixedWidth(full_width)
         else:
-            drawer.hide(); panel.setFixedWidth(52)
+            drawer.hide()
         if action is not None:action.setChecked(expanded)
         self._enforce_splitter_layout()
 
     def _enforce_splitter_layout(self):
         if not hasattr(self,"main_splitter"):return
-        left=300 if self._drawer_expanded(self.project_panel) else 52
+        # The navigation rail expands for second-level page names. Do not force
+        # its parent back to the old 52 px drawer width after show/resize.
+        rail_width=self.project_rail.width()
+        left=rail_width+252 if self._drawer_expanded(self.project_panel) else rail_width
         right=0
         self.project_panel.setFixedWidth(left); self.property_panel.setFixedWidth(right)
         available=max(240,self.main_splitter.width()-left-right-self.main_splitter.handleWidth()*2)

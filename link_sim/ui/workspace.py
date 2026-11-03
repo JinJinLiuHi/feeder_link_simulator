@@ -40,8 +40,13 @@ class LazyDialogPage(QWidget):
 class ChannelWorkspace(QWidget):
     def __init__(self,parent=None):
         super().__init__(parent);self.setStyleSheet(EMBEDDED_STYLE);layout=QVBoxLayout(self);layout.setContentsMargins(0,0,0,0);tabs=QTabWidget();tabs.setDocumentMode(True);layout.addWidget(tabs)
-        definitions=(("功放","link_sim.algorithm.pa_model","PAModelDialog"),("ADC/DAC","link_sim.algorithm.ad_model","ADDAModelDialog"),("滤波器","link_sim.algorithm.filter_model","FilterModelDialog"),("混频器","link_sim.algorithm.mixer_model","MixerModelDialog"))
+        definitions=(("功放","link_sim.algorithm.pa_model","PAModelDialog"),
+                     ("ADC/DAC","link_sim.algorithm.ad_model","ADDAModelDialog"),
+                     ("滤波器","link_sim.algorithm.filter_model","FilterModelDialog"),
+                     ("混频器","link_sim.algorithm.mixer_model","MixerModelDialog"))
         for title,module,cls in definitions:tabs.addTab(LazyDialogPage(module,cls,tabs),title)
 
 def simulation_pages(parent=None):
-    return [("信道仿真",ChannelWorkspace(parent)),("模型库",LazyDialogPage("link_sim.ui.model_library","ModelLibraryDialog",parent))]
+    return [("信道仿真",ChannelWorkspace(parent)),
+            ("全链路波形仿真",LazyDialogPage("link_sim.ui.waveform_workspace","WaveformWorkspace",parent)),
+            ("模型库",LazyDialogPage("link_sim.ui.model_library","ModelLibraryDialog",parent))]

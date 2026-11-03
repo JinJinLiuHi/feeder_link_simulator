@@ -8,8 +8,9 @@ from PySide6.QtWidgets import (
     QPlainTextEdit, QPushButton, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QDialogButtonBox, QFileDialog, QMessageBox,
 )
-from link_sim.algorithm.model_store import ModelStore, default_database_path
+from link_sim.algorithm.model_store import ModelStore, default_database_path, format_beijing_time
 from link_sim.algorithm.device_models import KINDS, json_text, read_model_file, write_model_file
+from link_sim.ui.styles import APP_STYLE, light_palette
 
 
 def current_store():
@@ -22,18 +23,16 @@ def current_store():
 class SaveModelDialog(QDialog):
     def __init__(self, model, parent=None):
         super().__init__(parent)
+        self.setPalette(light_palette())
+        self.setStyleSheet(APP_STYLE)
         self.setWindowTitle("保存模型")
         self.setMinimumWidth(440)
         box = QVBoxLayout(self)
         form = QFormLayout()
         self.name = QLineEdit(model.name or KINDS[model.kind]+"模型")
         self.name.setMaxLength(120)
-        self.description = QPlainTextEdit(model.description)
-        self.description.setMaximumHeight(100)
         form.addRow("模型名称", self.name)
-        form.addRow("说明", self.description)
         box.addLayout(form)
-        box.addWidget(QLabel("同名模型保存为新版本，已有版本会保留。"))
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.button(QDialogButtonBox.StandardButton.Save).setText("保存")
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
@@ -53,7 +52,6 @@ def save_named(model, parent=None, store=None):
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return None
     model.name = dialog.name.text().strip()
-    model.description = dialog.description.toPlainText()
     return (store or current_store()).save(model)
 
 
@@ -71,6 +69,8 @@ def choose_export(parent, model):
 class ModelLibraryDialog(QDialog):
     def __init__(self, parent=None, kind=None, store=None):
         super().__init__(parent)
+        self.setPalette(light_palette())
+        self.setStyleSheet(APP_STYLE)
         self.setWindowTitle("器件模型库")
         self.resize(1000, 660)
         self.store = store or current_store()
@@ -87,7 +87,7 @@ class ModelLibraryDialog(QDialog):
             self.kind.setCurrentIndex(self.kind.findData(kind))
             self.kind.setEnabled(False)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("搜索模型名称或说明")
+        self.search.setPlaceholderText("搜索模型名称")
         row.addWidget(self.kind)
         row.addWidget(self.search, 1)
         refresh = QPushButton("刷新")
@@ -98,13 +98,14 @@ class ModelLibraryDialog(QDialog):
         self.location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.location.setWordWrap(True)
         root.addWidget(self.location)
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(["名称", "器件类型", "版本", "保存时间 (UTC)", "说明"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["名称", "器件类型", "保存时间（北京时间）"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().hide()
+        self.table.setAlternatingRowColors(True)
         root.addWidget(self.table, 1)
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
@@ -145,8 +146,8 @@ class ModelLibraryDialog(QDialog):
             self.export_button.setEnabled(False)
             for row, entry in enumerate(entries):
                 self.table.insertRow(row)
-                for col, text in enumerate((entry["name"], KINDS[entry["kind"]], str(entry["revision"]),
-                                            entry["created_at"][:19].replace("T", " "), entry["description"])):
+                for col, text in enumerate((entry["name"], KINDS[entry["kind"]],
+                                            format_beijing_time(entry["created_at"]))):
                     item = QTableWidgetItem(text)
                     item.setData(Qt.ItemDataRole.UserRole, entry["id"])
                     self.table.setItem(row, col, item)
@@ -167,7 +168,7 @@ class ModelLibraryDialog(QDialog):
             model = self.store.get(key)
             self.selected_model, self.selected_id = model, key
             arrays = "\n".join(f"{name}: {value.dtype}, 形状 {value.shape}" for name, value in model.arrays.items())
-            self.details.setPlainText(f"{model.name} · {KINDS[model.kind]}\n{model.description}\n{arrays}\n参数：{json_text(model.parameters)}")
+            self.details.setPlainText(f"{model.name} · {KINDS[model.kind]}\n{arrays}\n参数：{json_text(model.parameters)}")
             self.load_button.setEnabled(True)
             self.export_button.setEnabled(True)
         except Exception as exc:
