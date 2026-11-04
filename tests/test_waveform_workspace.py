@@ -10,10 +10,13 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QDialog, QDoubleSpinBox, QPushButton, QToolButton
 
 from link_sim.algorithm.device_models import from_pa
+from link_sim.algorithm.pa_dpd import PADPDWidget
 from link_sim.algorithm.pa_simulation_core import PAModel
+from link_sim.algorithm.waveform_chain import Stage
 from link_sim.ui.waveform_workspace import StageDialog, WaveformWorkspace
 
 
@@ -36,7 +39,33 @@ class WaveformWorkspaceTests(unittest.TestCase):
             self.app.processEvents()
             time.sleep(.01)
         self.assertIsNone(self.workspace.worker, "Background computation did not finish")
-        self.assertEqual(len(self.workspace.outputs), 5)
+        self.assertEqual(len(self.workspace.outputs), 6)
+
+    def test_device_configuration_only_loads_models(self):
+        for kind in ("dpd", "filter", "mixer", "pa"):
+            with self.subTest(kind=kind):
+                dialog = StageDialog(Stage(kind, kind, kind, dict(cutoff=1., gain_db=6.)), self.workspace)
+                self.assertFalse(dialog.findChildren(QDoubleSpinBox))
+                self.assertTrue(dialog.details.isReadOnly())
+                self.assertCountEqual([b.text() for b in dialog.findChildren(QPushButton)],
+                                      ["从模型库加载…", "导入模型文件…", "应用", "取消"])
+                self.assertIn("理想直通", dialog.model_label.text())
+                dialog.enabled.setChecked(False)
+                dialog.accept()
+                self.assertEqual(dialog.stage.settings, {})
+                self.assertFalse(dialog.stage.enabled)
+                dialog.deleteLater()
+
+    def test_dpd_numeric_controls_keep_editable_fields_without_arrows(self):
+        panel = PADPDWidget(self.workspace)
+        for field in (panel.memory, panel.degree, panel.cross):
+            self.assertEqual(field.buttonSymbols(), QAbstractSpinBox.ButtonSymbols.NoButtons)
+            self.assertFalse(field.findChildren(QToolButton))
+        edit = panel.memory.lineEdit()
+        edit.selectAll()
+        QTest.keyClicks(edit, "8")
+        panel.memory.interpretText()
+        self.assertEqual(panel.memory.value(), 8)
 
     def test_async_run_selection_and_model_edit(self):
         w = self.workspace
@@ -44,7 +73,7 @@ class WaveformWorkspaceTests(unittest.TestCase):
         self.wait_for_worker()
         self.assertTrue(w.export_button.isEnabled())
         w.fit_canvas()
-        self.assertEqual(len(w.outputs), 5, "Selecting/repositioning nodes must preserve results")
+        self.assertEqual(len(w.outputs), 6, "Selecting/repositioning nodes must preserve results")
         pa_node = next(n for n in w.graph.all_nodes() if n.KIND == "pa")
         w.select_node(pa_node)
         self.assertEqual(w.point.currentData(), pa_node.id)
@@ -71,6 +100,8 @@ class WaveformWorkspaceTests(unittest.TestCase):
 
     def test_save_open_scheme_rebuilds_connections(self):
         w = self.workspace
+        dpd = next(n for n in w.graph.all_nodes() if n.KIND == "dpd")
+        dpd.set_disabled(True)
         with tempfile.TemporaryDirectory() as folder:
             path = str(Path(folder)/"transmitter.json")
             with patch("link_sim.ui.waveform_workspace.QFileDialog.getSaveFileName", return_value=(path, "")):
@@ -79,10 +110,15 @@ class WaveformWorkspaceTests(unittest.TestCase):
             with patch("link_sim.ui.waveform_workspace.QFileDialog.getOpenFileName", return_value=(path, "")):
                 w.open_scheme()
             stages, edges = w.snapshot()
-            self.assertEqual(len(stages), 5)
-            self.assertEqual(len(edges), 4)
+            self.assertEqual(len(stages), 6)
+            self.assertEqual(len(edges), 5)
+            dpd = next(s for s in stages if s.kind == "dpd")
+            dac = next(s for s in stages if s.kind == "dac")
+            self.assertFalse(dpd.enabled)
+            self.assertIn((dpd.key, dac.key), edges)
             w.run_chain()
             self.wait_for_worker()
+            self.assertIn("已旁路", w.outputs[dpd.key].notes[0])
 
 
 if __name__ == "__main__":

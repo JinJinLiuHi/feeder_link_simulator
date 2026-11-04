@@ -26,9 +26,9 @@ import ephem
 
 try:
     from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QSettings, QThread, QTimer, QUrl, Qt, Signal, Slot
-    from PySide6.QtGui import QAction, QColor, QIcon, QPalette, QPainter, QPen
+    from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen
     from PySide6.QtWidgets import (
-        QApplication, QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+        QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
         QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
         QMessageBox, QPushButton, QProgressBar, QSlider, QSpinBox, QSplitter,
         QStackedWidget, QStyle, QTableWidget, QTableWidgetItem, QTabBar, QTabWidget,
@@ -36,7 +36,7 @@ try:
         QHeaderView,
     )
 except ImportError as exc:
-    raise SystemExit("缺少 PySide6。请在当前conda环境执行：conda install -c conda-forge pyside6") from exc
+    raise SystemExit("缺少 PySide6。请在启动软件的 Python 环境执行：python -m pip install -r requirements.txt") from exc
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -45,8 +45,7 @@ try:
 except ImportError as exc:
     raise SystemExit(
         "PySide6已安装，但Qt WebEngine运行库缺失或DLL版本不一致。\n"
-        "请在当前conda环境执行：conda install -c conda-forge qt6-webengine\n"
-        "不要使用pip安装PySide6-Addons覆盖conda版本。"
+        "请在独立的 Python 环境执行：python -m pip install -r requirements.txt"
     ) from exc
 
 
@@ -1126,7 +1125,7 @@ class SimulationWorker(QObject):
 class MainWindow(QMainWindow):
     filtered_frame_ready = Signal(dict, int)
 
-    def __init__(self):
+    def __init__(self, *, load_map=True):
         super().__init__(); self.setWindowTitle("星地馈电链路与星座仿真验证系统"); self.resize(1500, 900)
         icon_path=Path(__file__).with_name("assets")/"satellite.svg"
         if icon_path.exists(): self.setWindowIcon(QIcon(str(icon_path)))
@@ -1148,10 +1147,15 @@ class MainWindow(QMainWindow):
         self.notice_banner=QLabel(self);self.notice_banner.setObjectName("noticeBanner");self.notice_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.notice_banner.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,True);self.notice_banner.hide()
         self.web_channel=QWebChannel(self.web.page()); self.map_bridge=MapBridge(self); self.map_bridge.plane_filter_changed.connect(self._map_plane_filter_changed);self.map_bridge.viewport_changed.connect(self._map_viewport_changed);self.map_bridge.traffic_details_requested.connect(self._traffic_details_requested);self.map_bridge.satellite_path_requested.connect(self._satellite_path_requested);self.map_bridge.input_view_changed.connect(self._input_view_changed); self.web_channel.registerObject("mapBridge",self.map_bridge); self.web.page().setWebChannel(self.web_channel)
-        self.web.loadFinished.connect(self._web_loaded); self.web.setUrl(QUrl.fromLocalFile(str(WEB_FILE)))
+        self.web.loadFinished.connect(self._web_loaded)
+        if load_map:
+            self.load_map()
         self.resource_timer=QTimer(self); self.resource_timer.timeout.connect(self._update_runtime_status); self.resource_timer.start(1000)
         self.result_play_timer=QTimer(self); self.result_play_timer.timeout.connect(self._advance_result_playback)
         self._enable_dark_title_bar(); QTimer.singleShot(0,self._enable_dark_title_bar)
+
+    def load_map(self):
+        self.web.setUrl(QUrl.fromLocalFile(str(WEB_FILE)))
 
     def _enable_dark_title_bar(self):
         if sys.platform != "win32":return
@@ -1230,7 +1234,9 @@ class MainWindow(QMainWindow):
         """)
 
     def _spin(self, minimum, maximum, value, decimals=None, suffix=""):
-        box = QDoubleSpinBox() if decimals is not None else QSpinBox(); box.setRange(minimum, maximum); box.setValue(value)
+        box = QDoubleSpinBox() if decimals is not None else QSpinBox()
+        box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        box.setRange(minimum, maximum); box.setValue(value)
         if decimals is not None: box.setDecimals(decimals)
         box.setSuffix(suffix); return box
 
@@ -2738,9 +2744,8 @@ class MainWindow(QMainWindow):
 
 
 def run_app():
-    app=QApplication(sys.argv); app.setStyle("Fusion")
-    palette=QPalette(); palette.setColor(QPalette.ColorRole.Window,QColor("#07131f")); palette.setColor(QPalette.ColorRole.WindowText,QColor("#d9ecf7")); palette.setColor(QPalette.ColorRole.Base,QColor("#091b29")); palette.setColor(QPalette.ColorRole.AlternateBase,QColor("#0a1b2a")); palette.setColor(QPalette.ColorRole.Text,QColor("#d9ecf7")); palette.setColor(QPalette.ColorRole.Button,QColor("#0d2638")); palette.setColor(QPalette.ColorRole.ButtonText,QColor("#d9ecf7")); palette.setColor(QPalette.ColorRole.Highlight,QColor("#12617b")); palette.setColor(QPalette.ColorRole.HighlightedText,QColor("#ffffff")); app.setPalette(palette)
-    app.setApplicationName("星地馈电链路与星座仿真验证系统"); icon_path=Path(__file__).with_name("assets")/"satellite.svg"; app.setWindowIcon(QIcon(str(icon_path))); window=MainWindow(); window.showMaximized(); sys.exit(app.exec())
+    from constellation_sim.ui.startup import run_app as start
+    start()
 
 
 if __name__ == "__main__":

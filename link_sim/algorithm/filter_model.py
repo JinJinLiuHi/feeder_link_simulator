@@ -673,7 +673,10 @@ class FilterModelDialog(ModuleDialog):
             return
 
         if arrays is not None:
-            b, a, sos = arrays["b"].copy(), arrays["a"].copy(), arrays.get("sos")
+            if "b" in arrays:
+                b, a, sos = arrays["b"].copy(), arrays["a"].copy(), arrays.get("sos")
+            else:
+                b, a, sos = arrays["h"].copy(), np.array([1.]), None
         elif impl == "外部系数":
             raise ValueError("外部系数模型的参数已修改，请切换 IIR/FIR 重新设计，或重新导入系数")
         elif impl == "IIR":

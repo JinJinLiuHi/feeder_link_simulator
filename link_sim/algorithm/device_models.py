@@ -5,12 +5,14 @@ import copy
 import json
 from pathlib import Path
 import numpy as np
+from scipy import signal
 from .pa_simulation_core import PAModel, load_model
 
 FORMAT = "feeder-link-device-model"
 VERSION = 1
 KINDS = {"pa": "功放", "dpd": "数字预失真", "adda": "ADC/DAC", "filter": "滤波器", "mixer": "混频器"}
 MAX_BYTES = 32 * 1024**2
+IIR_IMPULSE_SAMPLES = 4096
 FILTER_DEFAULTS = dict(impl="外部系数", iir_type="Butterworth", fir_method="窗函数法", window="hamming",
     band="低通", fs=100e6, fc1=20e6, fc2=40e6, order=6, numtaps=65, rp=.5,
     rs=60., trans_bw=4e6, beta=.25, sps=8, span=10)
@@ -130,17 +132,21 @@ def validate_behavior(model):
         allowed = {"b", "a", "sos", "h"}
         if not set(a) <= allowed:
             raise ValueError("滤波器仅支持 b/a/sos/h 系数数组")
-        if "h" in a:
-            if a["h"].ndim != 1 or set(a) != {"h"}:
-                raise ValueError("RRC 系数须为单个一维 h 数组")
-            if p["impl"] != "RRC 成形":
-                raise ValueError("h 数组仅用于 RRC；普通 FIR 请使用 b 和 a")
-            if np.any(np.imag(a["h"]) != 0):
+        h = a.get("h")
+        if h is not None and h.ndim != 1:
+            raise ValueError("冲激响应 h 须为一维数组")
+        if set(a) == {"h"}:
+            if p["impl"] == "IIR":
+                raise ValueError("IIR 须保留递推系数 b/a 或 b/a/sos")
+            if p["impl"] == "RRC 成形" and np.any(np.imag(h) != 0):
                 raise ValueError("RRC 成形滤波器须使用实数系数")
         elif not {"b", "a"} <= set(a) or any(a[key].ndim != 1 for key in ("b", "a")) or a["a"][0] == 0:
             raise ValueError("滤波器须包含一维 b/a 系数且 a[0] 非零")
         if "sos" in a and (a["sos"].ndim != 2 or a["sos"].shape[1] != 6 or np.any(a["sos"][:, 3] == 0)):
             raise ValueError("SOS 须为 N×6 数组，各节 a0 非零")
+        if h is not None and "a" in a and "sos" not in a and len(a["a"]) == 1:
+            if h.shape != a["b"].shape or not np.allclose(h, a["b"] / a["a"][0], rtol=1e-6, atol=0):
+                raise ValueError("FIR 冲激响应 h 与 b/a 系数不一致")
         if p["impl"] != "外部系数":
             for key in FILTER_DEFAULTS:
                 if key not in p:
@@ -159,6 +165,32 @@ def validate_behavior(model):
                     raise ValueError("滤波器截止频率须低于 Nyquist")
                 if p["band"] in ("带通", "带阻") and not fc < number(p, "fc2") < fs/2:
                     raise ValueError("带通/带阻须满足 0 < fc1 < fc2 < fs/2")
+
+
+def prepare_model_for_storage(model):
+    """Persist h[n] from n=0 alongside the filter sampling rate and design."""
+    model = model.validated()
+    if model.kind != "filter" or "h" in model.arrays:
+        return model
+    b, a = model.arrays["b"], model.arrays["a"]
+    sos = model.arrays.get("sos")
+    if sos is None and len(a) == 1:
+        h = b / a[0]
+    else:
+        # Keep a finite preview of the IIR tail. Filtering still uses the recurrence.
+        impulse = np.zeros(IIR_IMPULSE_SAMPLES)
+        impulse[0] = 1.
+        if sos is not None:
+            h = signal.sosfilt(sos / sos[:, 3:4], impulse)
+        else:
+            h = signal.lfilter(b, a, impulse)
+        nonfinite = np.flatnonzero(~np.isfinite(h))
+        if nonfinite.size:
+            h = h[:nonfinite[0]]
+        if not h.size:
+            return model
+    model.arrays["h"] = h
+    return model.validated()
 
 
 def from_pa(pa, name="", description=""):
@@ -196,7 +228,7 @@ def unpack_manifest(data, arrays):
 
 
 def write_model_file(path, model):
-    model = model.validated()
+    model = prepare_model_for_storage(model)
     path = Path(path)
     data = manifest(model)
     if path.suffix.lower() == ".npz":
@@ -224,10 +256,15 @@ def read_model_file(path, expected_kind=None):
             dtype = np.dtype(item["dtype"])
             if dtype.kind not in "biufc":
                 raise ValueError("不支持该数组数据类型")
-            values = np.asarray(item["real"])
+            real = np.asarray(item["real"])
             if "imag" in item:
-                values = values + 1j*np.asarray(item["imag"])
-            array = np.asarray(values, dtype=dtype)
+                imag = np.asarray(item["imag"])
+                if dtype.kind != "c" or imag.shape != real.shape:
+                    raise ValueError("模型复数系数格式不正确")
+                array = np.empty(real.shape, dtype=dtype)
+                array.real, array.imag = real, imag
+            else:
+                array = np.asarray(real, dtype=dtype)
             if list(array.shape) != item["shape"]:
                 raise ValueError("模型系数形状与内容不一致")
             arrays[name] = array
@@ -243,16 +280,16 @@ def read_model_file(path, expected_kind=None):
                     {k[6:]: np.array(data[k]) for k in data.files if k.startswith("array_")})
             elif "fitCoefMatMem" in data:
                 model = from_pa(load_model(path, expected_role=None), path.stem)
-            elif "fs" in data and ("b" in data or "sos" in data):
-                arrays = {k: np.array(data[k]) for k in ("b", "a", "sos") if k in data}
+            elif "fs" in data and any(k in data for k in ("b", "sos", "h")):
+                arrays = {k: np.array(data[k]) for k in ("b", "a", "sos", "h") if k in data}
                 if "sos" in arrays and ("b" not in arrays or "a" not in arrays):
                     from scipy.signal import sos2tf
                     arrays["b"], arrays["a"] = sos2tf(arrays["sos"])
-                elif "a" not in arrays:
+                elif "b" in arrays and "a" not in arrays:
                     arrays["a"] = np.array([1.0])
                 model = DeviceModel("filter", dict(FILTER_DEFAULTS, fs=float(data["fs"].item())), arrays, path.stem).validated()
             else:
-                raise ValueError("NPZ 缺少模型说明、功放系数或滤波器 b/a/sos 与 fs")
+                raise ValueError("NPZ 缺少模型说明、功放系数或滤波器 b/a/sos/h 与 fs")
     elif suffix in (".csv", ".txt"):
         model = from_pa(load_model(path, expected_role=None), path.stem)
     else:

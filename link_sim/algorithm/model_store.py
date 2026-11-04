@@ -4,11 +4,13 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import hashlib
 import io
+import json
 import os
 from pathlib import Path
 import sqlite3
 import numpy as np
-from .device_models import DeviceModel, KINDS, MAX_BYTES, json_text
+from .device_models import DeviceModel, KINDS, MAX_BYTES, json_text, prepare_model_for_storage, to_pa
+from .pa_dpd_core import signature
 
 
 BEIJING_TIMEZONE = timezone(timedelta(hours=8))
@@ -59,6 +61,9 @@ class ModelStore:
             else:
                 if db.execute("PRAGMA application_id").fetchone()[0] != 1179403341:
                     raise ValueError("该文件不是本程序的器件模型数据库")
+            db.execute("""CREATE TABLE IF NOT EXISTS dpd_pa_pairs (
+                dpd_id INTEGER PRIMARY KEY REFERENCES models(id) ON DELETE CASCADE,
+                pa_id INTEGER NOT NULL REFERENCES models(id) ON DELETE RESTRICT)""")
 
     @contextmanager
     def connection(self):
@@ -78,8 +83,24 @@ class ModelStore:
             digest.update(name.encode()+b"\0"+blob)
         return digest.hexdigest()
 
-    def save(self, model):
-        model = model.validated()
+    def save(self, model, *, paired_pa=None):
+        model = prepare_model_for_storage(model)
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            pa_id = None
+            if model.kind == "dpd":
+                fingerprint = model.parameters["fit_info"]["paSignature"]
+                pa_id = self._matching_pa_id(db, fingerprint)
+                if pa_id is None:
+                    if paired_pa is None or paired_pa.kind != "pa" or signature(to_pa(paired_pa)) != fingerprint:
+                        raise ValueError("模型库中没有与此 DPD 配对的功放，请先保存训练时使用的功放模型")
+                    pa_id = self._insert(db, paired_pa.validated())
+            model_id = self._insert(db, model)
+            if pa_id is not None:
+                db.execute("INSERT INTO dpd_pa_pairs(dpd_id, pa_id) VALUES(?,?)", (model_id, pa_id))
+        return model_id
+
+    def _insert(self, db, model):
         if not model.name:
             raise ValueError("请填写模型名称")
         parameters = json_text(model.parameters)
@@ -89,17 +110,33 @@ class ModelStore:
             np.save(stream, array, allow_pickle=False)
             blobs[name] = stream.getvalue()
         checksum = self.checksum(model.kind, parameters, blobs)
-        with self.connection() as db:
-            db.execute("BEGIN IMMEDIATE")
-            revision = db.execute("SELECT COALESCE(MAX(revision),0)+1 FROM models WHERE kind=? AND name=?",
-                                  (model.kind, model.name)).fetchone()[0]
-            cursor = db.execute("""INSERT INTO models(kind,name,revision,description,parameters_json,created_at,checksum)
-                    VALUES(?,?,?,?,?,?,?)""", (model.kind, model.name, revision, model.description, parameters,
-                      datetime.now(BEIJING_TIMEZONE).isoformat(timespec="microseconds"), checksum))
-            model_id = cursor.lastrowid
-            db.executemany("INSERT INTO model_arrays(model_id,name,npy_data) VALUES(?,?,?)",
-                           [(model_id, name, blob) for name, blob in blobs.items()])
+        revision = db.execute("SELECT COALESCE(MAX(revision),0)+1 FROM models WHERE kind=? AND name=?",
+                              (model.kind, model.name)).fetchone()[0]
+        cursor = db.execute("""INSERT INTO models(kind,name,revision,description,parameters_json,created_at,checksum)
+                VALUES(?,?,?,?,?,?,?)""", (model.kind, model.name, revision, model.description, parameters,
+                  datetime.now(BEIJING_TIMEZONE).isoformat(timespec="microseconds"), checksum))
+        model_id = cursor.lastrowid
+        db.executemany("INSERT INTO model_arrays(model_id,name,npy_data) VALUES(?,?,?)",
+                       [(model_id, name, blob) for name, blob in blobs.items()])
         return model_id
+
+    def _matching_pa_id(self, db, fingerprint):
+        for row in db.execute("SELECT id FROM models WHERE kind='pa' ORDER BY id DESC"):
+            if signature(to_pa(self._get(db, row["id"]))) == fingerprint:
+                return row["id"]
+        return None
+
+    def paired_power_amplifier(self, dpd_id):
+        with self.connection() as db:
+            pair = db.execute("SELECT pa_id FROM dpd_pa_pairs WHERE dpd_id=?", (dpd_id,)).fetchone()
+            if pair is not None:
+                return self._get(db, pair["pa_id"])
+            # Earlier libraries recorded the same fingerprint in the DPD snapshot.
+            dpd = self._get(db, dpd_id)
+            if dpd.kind != "dpd":
+                raise ValueError("请选择数字预失真模型")
+            pa_id = self._matching_pa_id(db, dpd.parameters["fit_info"]["paSignature"])
+            return self._get(db, pa_id) if pa_id is not None else None
 
     def list(self, kind=None, search=""):
         clauses, args = [], []
@@ -119,13 +156,15 @@ class ModelStore:
             return [dict(row) for row in db.execute(query+" ORDER BY id DESC", args)]
 
     def get(self, model_id):
-        import json
         with self.connection() as db:
-            row = db.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
-            if row is None:
-                raise ValueError("模型记录不存在，请刷新模型库")
-            blobs = {r["name"]: bytes(r["npy_data"]) for r in db.execute(
-                "SELECT name,npy_data FROM model_arrays WHERE model_id=?", (model_id,))}
+            return self._get(db, model_id)
+
+    def _get(self, db, model_id):
+        row = db.execute("SELECT * FROM models WHERE id=?", (model_id,)).fetchone()
+        if row is None:
+            raise ValueError("模型记录不存在，请刷新模型库")
+        blobs = {r["name"]: bytes(r["npy_data"]) for r in db.execute(
+            "SELECT name,npy_data FROM model_arrays WHERE model_id=?", (model_id,))}
         if sum(map(len, blobs.values())) > MAX_BYTES*2:
             raise ValueError("模型系数过大")
         if self.checksum(row["kind"], row["parameters_json"], blobs) != row["checksum"]:

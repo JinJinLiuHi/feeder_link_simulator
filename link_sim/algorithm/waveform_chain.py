@@ -2,7 +2,7 @@
 
 Samples use normalized I/Q units; AD/DA errors come from the original model output.
 carrier_hz is metadata: an RF carrier is not sampled at GHz rates. Frequency
-offset blocks, unlike an upconverter's carrier setting, shift sampled spectra.
+offset blocks shift sampled spectra within the complex envelope.
 """
 
 from dataclasses import dataclass, field
@@ -12,16 +12,18 @@ from pathlib import Path
 import numpy as np
 from scipy import signal
 
-from .device_models import DeviceModel, manifest, unpack_manifest, to_pa
+from .device_models import DeviceModel, manifest, prepare_model_for_storage, unpack_manifest, to_pa
 from .pa_simulation_core import load_waveform, positive_rate, simulate, waveform
 from .adc_noise_core import calibrate_model_noise, generate_model_noise
+from .mixer_noise_core import generate_phase_noise
+from .pa_dpd_core import signature
 
 
 MAX_SAMPLES = 262144
-KINDS = {"source": "基带信号源", "dac": "AD/DA", "filter": "滤波器",
+KINDS = {"source": "基带信号源", "dpd": "数字预失真（DPD）", "dac": "AD/DA", "filter": "滤波器",
          "mixer": "上变频器", "pa": "功率放大器", "gain": "增益",
          "frequency": "频率偏移", "awgn": "加性白噪声"}
-DEVICE_KINDS = {"dac": "adda", "filter": "filter", "mixer": "mixer", "pa": "pa"}
+DEVICE_KINDS = {"dpd": "dpd", "dac": "adda", "filter": "filter", "mixer": "mixer", "pa": "pa"}
 
 
 @dataclass
@@ -61,6 +63,7 @@ class Stage:
     name: str
     settings: dict = field(default_factory=dict)
     model: DeviceModel | None = None
+    enabled: bool = True
 
 
 def _number(settings, key, default, low=None, high=None, integer=False):
@@ -75,12 +78,10 @@ def _number(settings, key, default, low=None, high=None, integer=False):
 
 
 def default_settings(kind):
+    if kind in DEVICE_KINDS:
+        return {}
     return {
         "source": dict(fs=100e6, count=16384, sps=8, amplitude=.2, seed=2025, modulation="QPSK"),
-        "dac": {},
-        "filter": dict(cutoff=15e6, taps=65),
-        "mixer": dict(carrier_hz=14e9, gain_db=0.),
-        "pa": dict(gain_db=0.),
         "gain": dict(gain_db=0.),
         "frequency": dict(offset_hz=0.),
         "awgn": dict(snr_db=30., seed=2025),
@@ -155,29 +156,23 @@ def _check_model(stage, fs):
     model = stage.model.validated()
     if model.kind != DEVICE_KINDS.get(stage.kind):
         raise ValueError("所选模型的器件类型不匹配")
-    # The ADC noise floor is converted from its calibration FFT bin width to
-    # density; the input array's sampling grid is not replaced.
-    rate = None if model.kind == "adda" else model.parameters.get("sample_rate" if model.kind == "pa" else "fs")
+    # ADC and mixer noise use spectral densities on the input waveform's sampling grid.
+    rate_key = {"filter": "fs", "pa": "sample_rate", "dpd": "sample_rate"}.get(model.kind)
+    rate = model.parameters.get(rate_key)
     if rate is not None and not np.isclose(fs, rate, rtol=1e-9, atol=1e-6):
         raise ValueError(f"模型采样率为 {rate/1e6:g} MHz，输入为 {fs/1e6:g} MHz；请修改信号源或更换模型")
     return model
 
 
-def _phase_noise(fs, count, anchors, seed):
-    # Same SSB L(f) convention as the existing mixer editor, without its Qt imports.
-    offsets = np.fft.rfftfreq(count, 1/fs)
-    frequency, level = np.array(anchors, dtype=float).T
-    psd = 10**(np.interp(np.log10(np.maximum(offsets, offsets[1])),
-                         np.log10(frequency), level)/10)
-    weights = np.sqrt(psd*fs)
-    mirrored = weights[-2:0:-1] if count % 2 == 0 else weights[-1:0:-1]
-    white = np.random.default_rng(seed).standard_normal(count)
-    phi = np.fft.ifft(np.fft.fft(white)*np.concatenate((weights, mirrored))).real
-    return phi-phi.mean()
-
-
 def process_stage(stage, incoming, backend="numpy", noise_stream=0):
+    if not stage.enabled:
+        return Wave(incoming.x.copy(), incoming.fs, incoming.carrier_hz, incoming.start,
+                    incoming.stop, ("已旁路，直接传递输入 I/Q",))
     model = _check_model(stage, incoming.fs)
+    if stage.kind in DEVICE_KINDS and model is None:
+        return Wave(incoming.x.copy(), incoming.fs, incoming.carrier_hz, incoming.start,
+                    incoming.stop, ("未加载器件模型，当前为理想直通；双击加载或导入模型",))
+
     p = stage.settings
     x, fs = incoming.x, incoming.fs
     start, stop = incoming.start, incoming.stop
@@ -185,64 +180,51 @@ def process_stage(stage, incoming, backend="numpy", noise_stream=0):
     notes = []
     added_error = None
     if stage.kind == "filter":
-        if model is None:
-            cutoff = _number(p, "cutoff", 15e6, 1.)
-            taps = _number(p, "taps", 65, 3, 4095, True)
-            if cutoff >= fs/2:
-                raise ValueError("截止频率必须低于采样率的一半")
-            b, a, sos = signal.firwin(taps, cutoff, fs=fs), np.array([1.]), None
-            notes.append("内置低通 FIR")
-        else:
-            b = model.arrays.get("h", model.arrays.get("b"))
-            a = model.arrays.get("a", np.array([1.]))
-            sos = model.arrays.get("sos")
-            notes.append(f"模型：{model.name}")
+        b = model.arrays.get("b")
+        a = model.arrays.get("a", np.array([1.]))
+        sos = model.arrays.get("sos")
+        notes.append(f"模型：{model.name}")
         fir = sos is None and len(a) == 1
-        if backend == "gnuradio" and fir:
-            from .waveform_gnuradio import native_block
-            y = native_block(x, "fir", taps=b/a[0])
-            notes.append("GNU Radio 原生 FIR")
-        else:
-            y = signal.sosfilt(sos, x) if sos is not None else signal.lfilter(b, a, x)
         if fir:
-            start += len(b)-1
-            notes.append(f"FIR 起始 {len(b)-1} 点为启动瞬态；尾部未补零冲洗")
+            h = model.arrays.get("h")
+            if h is None:
+                h = b / a[0]
+            if backend == "gnuradio":
+                from .waveform_gnuradio import native_block
+                y = native_block(x, "fir", taps=h)
+                notes.append("GNU Radio 原生 FIR")
+            else:
+                y = np.convolve(x, h)[:len(x)]
+            start += len(h)-1
+            notes.append(f"FIR 时域卷积；起始 {len(h)-1} 点为启动瞬态；尾部未补零冲洗")
         else:
-            notes.append("IIR 输出包含启动瞬态，未自动判定稳定时间")
+            # The time-domain recurrence accounts for the entire IIR impulse response.
+            y = signal.sosfilt(sos / sos[:, 3:4], x) if sos is not None else signal.lfilter(b, a, x)
+            notes.append("IIR 时域递推；输出包含启动瞬态，未自动判定稳定时间")
     elif stage.kind == "dac":
         # Keep the historical node key 'dac' so saved chain diagrams still load.
-        if model is None:
-            y = x.copy()
-            notes.append("AD/DA 未加载器件模型，当前为理想直通；双击从原 ADC/DAC 模型库加载")
-        else:
-            seed = 2025
-            if noise_stream:
-                seed = int(np.random.SeedSequence([seed, noise_stream]).generate_state(1)[0])
-            reference = calibrate_model_noise(model)
-            noise, power = generate_model_noise(reference, len(x), fs, seed=seed)
-            y = x+noise
-            added_error = noise
-            measured = float(np.mean(abs(noise[start:stop])**2))
-            notes.append(f"x=s+n；{model.name or model.parameters['device_profile']}；"
-                         f"模型估计噪声基底 {reference.floor_dbfs:.2f} dBFS/频点；"
-                         f"Pn={power:.6g}；理论噪声 RMS {np.sqrt(power):.4g}；"
-                         f"实测 RMS {np.sqrt(measured):.4g}；自动匹配链路采样率，不叠加杂散")
+        seed = 2025
+        if noise_stream:
+            seed = int(np.random.SeedSequence([seed, noise_stream]).generate_state(1)[0])
+        reference = calibrate_model_noise(model)
+        noise, power = generate_model_noise(reference, len(x), fs, seed=seed)
+        y = x+noise
+        added_error = noise
+        measured = float(np.mean(abs(noise[start:stop])**2))
+        notes.append(f"x=s+n；{model.name or model.parameters['device_profile']}；"
+                     f"模型估计噪声基底 {reference.floor_dbfs:.2f} dBFS/频点；"
+                     f"Pn={power:.6g}；理论噪声 RMS {np.sqrt(power):.4g}；"
+                     f"实测 RMS {np.sqrt(measured):.4g}；自动匹配链路采样率，不叠加杂散")
     elif stage.kind == "mixer":
-        carrier = _number(p, "carrier_hz", 14e9, 0., 1e15)
-        gain = 10**(_number(p, "gain_db", 0., -100., 100.)/20)
-        phi = _phase_noise(fs, len(x), model.parameters["anchors"], 2025) if model else 0.
-        y = gain*x*np.exp(1j*phi)
-        notes.append("复包络上变频：载频作为元数据；加载模型时应用相噪锚点；不含本振泄漏")
-    elif stage.kind == "pa":
-        if model:
-            pa = to_pa(model)
-            _, y, valid = simulate(pa, x, fs)
-            start += valid.start
-            stop -= pa.edge
-            notes.append(f"{model.name}；按保存系数计算，未重新归一化")
-        else:
-            y = x*10**(_number(p, "gain_db", 0., -100., 100.)/20)
-            notes.append("理想线性功放；双击加载辨识模型以模拟非线性")
+        phi, _, _, _ = generate_phase_noise(fs, len(x), model.parameters["anchors"])
+        y = x*np.exp(1j*phi)
+        notes.append(f"{model.name or '混频器模型'}；按链路 {fs/1e6:g} MHz、{len(x):,} 点生成本振相噪；"
+                     f"频点间隔 {fs/len(x):.4g} Hz；相噪 RMS {np.std(phi[start:stop]):.5g} rad；时域逐点旋转")
+    elif stage.kind in ("pa", "dpd"):
+        _, y, valid = simulate(to_pa(model), x, fs)
+        start += valid.start
+        stop -= len(x) - valid.stop
+        notes.append(f"{model.name}；按保存系数计算，未重新归一化")
     elif stage.kind == "gain":
         gain = 10**(_number(p, "gain_db", 0., -100., 100.)/20)
         if backend == "gnuradio":
@@ -279,14 +261,31 @@ def run_graph(stages, edges, backend="numpy", progress=None, cancelled=None):
         from .waveform_gnuradio import require_runtime
         require_runtime()
     ordered, parents = order_graph(stages, edges)
-    outputs = {}
+    outputs, pending_dpd = {}, {}
     noise_stream = 0
     for index, stage in enumerate(ordered):
         if cancelled and cancelled():
             raise InterruptedError("仿真已取消")
         try:
-            outputs[stage.key] = source_wave(stage.settings) if stage.kind == "source" else process_stage(
-                stage, outputs[parents[stage.key]], backend, noise_stream=noise_stream)
+            if stage.kind == "source":
+                wave = source_wave(stage.settings)
+                if not stage.enabled:
+                    wave = Wave(np.zeros_like(wave.x), wave.fs, notes=("信号源已关闭，输出零 I/Q",))
+                outputs[stage.key] = wave
+            else:
+                parent = parents[stage.key]
+                dpd = pending_dpd.get(parent)
+                if stage.enabled and stage.model is not None:
+                    if stage.kind == "dpd":
+                        if dpd is not None:
+                            raise ValueError("同一路径上的两级数字预失真之间须有已启用的配对功放")
+                        dpd = stage.model
+                    elif stage.kind == "pa" and dpd is not None:
+                        if dpd.parameters["fit_info"]["paSignature"] != signature(to_pa(stage.model)):
+                            raise ValueError(f"与上游数字预失真「{dpd.name or '未命名 DPD'}」不配对，请更换模型或旁路 DPD")
+                        dpd = None
+                pending_dpd[stage.key] = dpd
+                outputs[stage.key] = process_stage(stage, outputs[parent], backend, noise_stream=noise_stream)
             if stage.kind == "dac":
                 noise_stream += 1
         except (ValueError, FloatingPointError) as exc:
@@ -299,7 +298,7 @@ def run_graph(stages, edges, backend="numpy", progress=None, cancelled=None):
 def model_to_dict(model):
     if model is None:
         return None
-    model = model.validated()
+    model = prepare_model_for_storage(model)
     data = manifest(model)
     data["arrays"] = {k: dict(real=a.real.tolist(), imag=a.imag.tolist()) for k, a in model.arrays.items()}
     return data
@@ -308,9 +307,16 @@ def model_to_dict(model):
 def model_from_dict(data):
     if data is None:
         return None
-    arrays = {k: np.asarray(a["real"])+1j*np.asarray(a["imag"]) for k, a in data["arrays"].items()}
-    # Preserve real filter coefficients; SciPy's SOS implementation accepts real SOS.
-    arrays = {k: a.real if not np.any(a.imag) else a for k, a in arrays.items()}
+    arrays = {}
+    for key, values in data["arrays"].items():
+        real, imag = np.asarray(values["real"]), np.asarray(values["imag"])
+        if data.get("kind") in ("pa", "dpd") or np.any(imag):
+            # Keep signed zero in PA coefficients so the training fingerprint round-trips.
+            array = np.empty(real.shape, dtype=np.complex128)
+            array.real, array.imag = real, imag
+            arrays[key] = array
+        else:
+            arrays[key] = real
     return unpack_manifest(data, arrays)
 
 
@@ -318,7 +324,8 @@ def save_chain(path, stages, edges, positions, backend="numpy"):
     order_graph(stages, edges)
     payload = dict(format="feeder-waveform-chain", version=1, backend=backend, edges=edges,
                    nodes=[dict(key=s.key, kind=s.kind, name=s.name, settings=s.settings,
-                               model=model_to_dict(s.model), pos=positions.get(s.key, [0, 0])) for s in stages])
+                               model=model_to_dict(s.model), enabled=s.enabled,
+                               pos=positions.get(s.key, [0, 0])) for s in stages])
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2), encoding="utf-8")
 
 
@@ -338,7 +345,10 @@ def load_chain(path):
         pos = np.asarray(n.get("pos", [0, 0]), dtype=float)
         if pos.shape != (2,) or not np.all(np.isfinite(pos)):
             raise ValueError("画布位置无效")
-        stage = Stage(n["key"], n["kind"], n["name"], n["settings"], model_from_dict(n.get("model")))
+        enabled = n.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ValueError("模块开关状态无效")
+        stage = Stage(n["key"], n["kind"], n["name"], n["settings"], model_from_dict(n.get("model")), enabled)
         if stage.kind == "source":
             source_wave(stage.settings)
         elif stage.model and stage.model.kind != DEVICE_KINDS.get(stage.kind):

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QHeaderView, QDialogButtonBox, QFileDialog, QMessageBox,
 )
 from link_sim.algorithm.model_store import ModelStore, default_database_path, format_beijing_time
-from link_sim.algorithm.device_models import KINDS, json_text, read_model_file, write_model_file
+from link_sim.algorithm.device_models import KINDS, from_pa, json_text, read_model_file, write_model_file
 from link_sim.ui.styles import APP_STYLE, light_palette
 
 
@@ -47,12 +47,12 @@ class SaveModelDialog(QDialog):
         super().accept()
 
 
-def save_named(model, parent=None, store=None):
+def save_named(model, parent=None, store=None, *, paired_pa=None):
     dialog = SaveModelDialog(model, parent)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return None
     model.name = dialog.name.text().strip()
-    return (store or current_store()).save(model)
+    return (store or current_store()).save(model, paired_pa=paired_pa)
 
 
 def choose_export(parent, model):
@@ -168,7 +168,11 @@ class ModelLibraryDialog(QDialog):
             model = self.store.get(key)
             self.selected_model, self.selected_id = model, key
             arrays = "\n".join(f"{name}: {value.dtype}, 形状 {value.shape}" for name, value in model.arrays.items())
-            self.details.setPlainText(f"{model.name} · {KINDS[model.kind]}\n{arrays}\n参数：{json_text(model.parameters)}")
+            pair_text = ""
+            if model.kind == "dpd":
+                pa = self.store.paired_power_amplifier(key)
+                pair_text = f"\n配对功放：{pa.name if pa else '当前库中未找到'}"
+            self.details.setPlainText(f"{model.name} · {KINDS[model.kind]}{pair_text}\n{arrays}\n参数：{json_text(model.parameters)}")
             self.load_button.setEnabled(True)
             self.export_button.setEnabled(True)
         except Exception as exc:
@@ -248,7 +252,9 @@ class ModelActions(QWidget):
             self.check_idle()
             from link_sim.ui.device_model_bindings import capture_device
             model = capture_device(self.owner)
-            key = save_named(model, self)
+            pa = self.owner.dpd_page.model if model.kind == "dpd" else None
+            paired_pa = from_pa(pa, f"功放 {pa.name}") if pa is not None else None
+            key = save_named(model, self, paired_pa=paired_pa)
             if key is not None:
                 self.status.setText(f"已入库：{model.name}")
         except Exception as exc:

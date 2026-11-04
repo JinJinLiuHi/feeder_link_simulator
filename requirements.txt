@@ -1,0 +1,25 @@
+# Desktop interface and waveform canvas (PySide6 includes Qt WebEngine).
+PySide6==6.11.1
+NodeGraphQt==0.6.44
+Qt.py==2.0.7
+
+# Numerical simulation, plotting, BER and OFDM.
+numpy==2.3.2
+scipy==1.17.0
+matplotlib==3.11.2
+sionna==2.2.0
+torch==2.11.0
+
+# Orbit propagation, traffic preprocessing and resource monitoring.
+ephem==4.2.1
+sgp4==2.25
+h3==4.5.0
+rasterio>=1.4.3,<2
+psutil==7.2.2
+
+# Excel, MATLAB and tabular data export.
+openpyxl==3.1.5
+h5py==3.16.0
+pandas==2.3.2
+
+# The optional GNU Radio backend requires a separate GNU Radio runtime.

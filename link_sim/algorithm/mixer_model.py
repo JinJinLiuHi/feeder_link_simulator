@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from link_sim.ui.base_dialog import ModuleDialog
+from .mixer_noise_core import generate_phase_noise, phase_noise_psd as phase_noise_psd
 
 
 # 默认值对应用户给出的 MATLAB 相噪模板：(频偏 Hz, L(f) dBc/Hz)
@@ -68,39 +69,6 @@ def blackman_harris(length):
         0.35875 - 0.48829 * np.cos(phase) + 0.14128 * np.cos(2 * phase)
         - 0.01168 * np.cos(3 * phase)
     )
-
-
-def phase_noise_psd(anchors, fs, n_samples):
-    """由 SSB L(f) 锚点生成正频率一侧的双边相位 PSD (rad²/Hz)。"""
-    offsets = np.fft.rfftfreq(n_samples, 1.0 / fs)
-    anchor_offsets = np.asarray([item[0] for item in anchors])
-    anchor_levels = np.asarray([item[1] for item in anchors])
-    levels = np.empty_like(offsets)
-    positive = offsets[1:]
-    # 相噪曲线在 log(频偏)-dB 坐标中分段线性；锚点范围外保持端点值。
-    levels[1:] = np.interp(
-        np.log10(positive), np.log10(anchor_offsets), anchor_levels,
-        left=anchor_levels[0], right=anchor_levels[-1],
-    )
-    levels[0] = levels[1] if len(levels) > 1 else anchor_levels[0]
-    # L(f) 是单边带噪声功率比。生成共轭对称的双边频谱时，每一侧的
-    # 相位 PSD 为 10^(L/10)；总方差为 2·∫10^(L/10)df。
-    return offsets, levels, 10 ** (levels / 10.0)
-
-
-def generate_phase_noise(fs, n_samples, anchors, seed=2025):
-    """频域整形白噪声，生成满足目标 L(f) 的实值相位噪声序列。"""
-    offsets, levels, psd_single = phase_noise_psd(anchors, fs, n_samples)
-    rng = np.random.default_rng(seed)
-    white_fft = np.fft.fft(rng.standard_normal(n_samples))
-    filter_single = np.sqrt(psd_single * fs)
-    if n_samples % 2 == 0:
-        filter_full = np.concatenate((filter_single, filter_single[-2:0:-1]))
-    else:
-        filter_full = np.concatenate((filter_single, filter_single[-1:0:-1]))
-    phi = np.fft.ifft(white_fft * filter_full).real
-    phi -= np.mean(phi)
-    return phi, offsets, levels, psd_single
 
 
 def _integrated_phase_error(offsets, psd_single):

@@ -4,16 +4,15 @@
 
 ## 运行
 
-在项目根目录执行：
+在项目根目录，用启动软件的同一 Python 环境安装依赖并运行。当前已在 Python 3.13 上验证。
 
 ```powershell
-conda activate hypatia-satgen
+python -m pip install -r requirements.txt
 python main.py
 ```
 
-新增“链路仿真 → 全链路波形仿真”发射端画布。首次使用请在同一 Python 环境运行
-`python -m pip install -r requirements-waveform.txt`。
-模块连线、模型加载、各级波形观察及 GNU Radio 可选后端说明见 [全链路波形仿真](WAVEFORM_SIMULATION.md)。
+`requirements.txt` 包含全软件的 Python 依赖，PySide6 会安装对应的 Qt WebEngine 组件。
+“链路仿真 → 全链路波形仿真”的模块连线、模型加载、波形观察及 GNU Radio 可选后端说明见 [全链路波形仿真](WAVEFORM_SIMULATION.md)。
 
 ## 代码结构
 
@@ -23,12 +22,6 @@ python main.py
 - `result_store.py`：`.hysim` 压缩写入、索引和随机回读。
 - `web_bridge.py`：Python 与 Cesium 间的 Qt WebChannel 接口。
 - `viewer.html`：Cesium地图渲染和地图内交互。
-
-若环境中尚未安装 Qt WebEngine，请继续使用conda安装，避免和现有conda版PySide6混装：
-
-```powershell
-conda install -c conda-forge pyside6 qt6-webengine
-```
 
 Cesium和OpenStreetMap底图默认从互联网加载。打开程序后应先看到地球，再设置参数并点击“开始仿真”。
 

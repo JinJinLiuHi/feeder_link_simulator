@@ -8,7 +8,7 @@ import numpy as np
 from scipy.signal import welch
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal, QTimer
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QHBoxLayout, QLabel, QMessageBox, QPlainTextEdit,
     QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
@@ -22,7 +22,7 @@ try:
     from NodeGraphQt import BaseNode, NodeGraph
 except ImportError as exc:
     raise ImportError("缺少 NodeGraphQt 画布依赖。请在启动本软件的 Python 环境执行："
-                      "python -m pip install -r requirements-waveform.txt") from exc
+                      "python -m pip install -r requirements.txt") from exc
 
 from link_sim.algorithm.waveform_chain import (
     Stage, Wave, KINDS, DEVICE_KINDS, MAX_SAMPLES, default_settings, export_wave,
@@ -55,6 +55,10 @@ class SourceNode(SignalNode):
     NODE_NAME, KIND = "基带信号源", "source"
 
 
+class DPDNode(SignalNode):
+    NODE_NAME, KIND = "数字预失真（DPD）", "dpd"
+
+
 class DACNode(SignalNode):
     NODE_NAME, KIND = "AD/DA", "dac"
 
@@ -84,7 +88,7 @@ class NoiseNode(SignalNode):
 
 
 NODE_CLASSES = {cls.KIND: cls for cls in (
-    SourceNode, DACNode, FilterNode, MixerNode, PANode, GainNode, FrequencyNode, NoiseNode)}
+    SourceNode, DPDNode, DACNode, FilterNode, MixerNode, PANode, GainNode, FrequencyNode, NoiseNode)}
 
 
 # key, label, divisor for display units, min, max, decimals
@@ -94,12 +98,6 @@ FIELDS = {
                ("sps", "每符号采样点", 1, 2, 256, 0),
                ("amplitude", "标称 RMS 幅度 (归一化)", 1, .000001, 1, 6),
                ("seed", "随机种子", 1, 0, 2**32-1, 0)),
-    "dac": (),
-    "filter": (("cutoff", "低通截止频率 (MHz)", 1e6, .000001, 1e6, 6),
-               ("taps", "FIR 抽头数", 1, 3, 4095, 0)),
-    "mixer": (("carrier_hz", "输出载频 (GHz，元数据)", 1e9, 0, 1e6, 6),
-              ("gain_db", "变频增益 (dB)", 1, -100, 100, 3)),
-    "pa": (("gain_db", "理想线性增益 (dB)", 1, -100, 100, 3),),
     "gain": (("gain_db", "增益 (dB)", 1, -100, 100, 3),),
     "frequency": (("offset_hz", "频偏 (MHz)", 1e6, -1e6, 1e6, 6),),
     "awgn": (("snr_db", "输入信噪比 (dB)", 1, -40, 200, 3),
@@ -114,15 +112,16 @@ class StageDialog(QDialog):
         self.setWindowTitle("配置模块 · "+stage.name)
         self.resize(620, 590)
         root = QVBoxLayout(self)
+        self.enabled = QCheckBox("启用信号源（关闭时输出零 I/Q）" if stage.kind == "source" else
+                                "启用模块（关闭时旁路）")
+        self.enabled.setChecked(stage.enabled)
+        root.addWidget(self.enabled)
         self.model_label = QLabel()
         self.model_label.setWordWrap(True)
         root.addWidget(self.model_label)
         buttons = QHBoxLayout()
         if stage.kind in DEVICE_KINDS:
-            actions = [("从模型库加载…", self.choose_model), ("导入模型文件…", self.import_model)]
-            if stage.kind != "dac":
-                actions.append(("恢复内置模型", self.clear_model))
-            for label, action in actions:
+            for label, action in (("从模型库加载…", self.choose_model), ("导入模型文件…", self.import_model)):
                 button = QPushButton(label)
                 button.clicked.connect(action)
                 buttons.addWidget(button)
@@ -141,8 +140,9 @@ class StageDialog(QDialog):
             self.modulation.setCurrentText(stage.settings.get("modulation", "QPSK"))
             form.addRow("未编码测试调制", self.modulation)
         settings = dict(default_settings(stage.kind), **stage.settings)
-        for key, label, scale, low, high, decimals in FIELDS[stage.kind]:
+        for key, label, scale, low, high, decimals in FIELDS.get(stage.kind, ()):
             edit = QDoubleSpinBox()
+            edit.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.NoButtons)
             edit.setDecimals(decimals)
             edit.setRange(low, high)
             edit.setValue(settings[key]/scale)
@@ -153,10 +153,16 @@ class StageDialog(QDialog):
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
         root.addWidget(self.details, 1)
-        hint = QLabel("等效噪声使用原模型的估计量化噪声基底，自动匹配链路采样率；不叠加杂散。" if stage.kind == "dac" else
-                      "载频只记录射频位置，计算使用复包络。加载模型时以模型参数为准；灰色字段不可编辑。")
-        hint.setWordWrap(True)
-        root.addWidget(hint)
+        if stage.kind in DEVICE_KINDS:
+            hint = QLabel({
+                "dpd": "在时域处理复数 I/Q。请在下游功放节点加载与训练时配对的功放模型。",
+                "dac": "等效噪声使用原模型的估计量化噪声基底，自动匹配链路采样率；不叠加杂散。",
+                "filter": "在时域处理复数 I/Q。FIR/RRC 使用 h[n] 卷积，IIR 使用原系数递推。",
+                "mixer": "读取模型的相噪锚点，按输入 I/Q 的采样率和点数生成本振相噪，再逐点旋转。",
+                "pa": "按保存的 MP/GMP 系数计算非线性和记忆效应，保留信号幅度基准。",
+            }[stage.kind])
+            hint.setWordWrap(True)
+            root.addWidget(hint)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         box.button(QDialogButtonBox.StandardButton.Ok).setText("应用")
         box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
@@ -178,25 +184,26 @@ class StageDialog(QDialog):
             self.details.setPlainText("保留文件 I/Q 幅度；文件中的 sampleRate 优先作为初始采样率。\n"
                                       "编码和调制已由外部信号源完成。本页不重新编码或归一化。")
         else:
-            self.model_label.setText("未加载原 ADC/DAC 模型（理想直通）" if stage.kind == "dac" else
-                                     "当前：内置测试信号" if stage.kind == "source" else "当前：内置模型")
+            if stage.kind in DEVICE_KINDS:
+                self.model_label.setText("未加载器件模型（理想直通）")
+            elif stage.kind == "source":
+                self.model_label.setText("当前：内置测试信号")
             descriptions = {
+                "dpd": "加载数字预失真模型后，使用保存的多项式系数生成预失真 I/Q。",
                 "source": "未编码随机符号，矩形脉冲。实际编码调制信号请通过 I/Q 文件导入。",
                 "dac": "请从原 ADC/DAC 模型库加载器件模型。未加载时为理想直通。\n"
                        "读取模型的估计量化噪声基底，换算噪声功率；链路输出 = 链路输入 + 等效噪声。\n"
                        "自动匹配链路采样率，忽略杂散。原模型参数不在此修改。",
-                "filter": "使用窗函数低通 FIR；加载库模型后使用其 b/a、SOS 或 RRC 系数。",
-                "mixer": "理想变频＋增益；加载混频器模型后应用已保存的相噪锚点。暂不含本振泄漏。",
-                "pa": "当前为理想线性增益。加载功放 MP/GMP 模型后使用辨识系数计算非线性与记忆效应。",
+                "filter": "加载滤波器模型后，使用其冲激响应 h[n] 或递推系数计算输出。",
+                "mixer": "加载混频器模型后，应用已保存的相噪锚点。",
+                "pa": "加载功放 MP/GMP 模型后，使用保存的辨识系数计算输出。",
                 "gain": "对应 GNU Radio Multiply Const 的复数增益处理。",
                 "frequency": "对应信号源×复乘法的频移；请为频偏预留采样带宽。",
                 "awgn": "按输入有效区间平均功率生成复高斯噪声；种子固定时可复现。",
             }
             self.details.setPlainText(descriptions[stage.kind])
         for key, (edit, _, _) in self.fields.items():
-            disabled = (model is not None and stage.kind in ("filter", "pa") and key != "seed")
-            disabled |= imported and key not in ("fs",)
-            edit.setEnabled(not disabled)
+            edit.setEnabled(not imported or key == "fs")
         if stage.kind == "dac" and model:
             p = model.parameters
             from link_sim.algorithm.adc_noise_core import calibrate_model_noise
@@ -233,11 +240,6 @@ class StageDialog(QDialog):
             except Exception as exc:
                 QMessageBox.warning(self, "导入失败", str(exc))
 
-    def clear_model(self):
-        self.stage.model = None
-        self.stage.settings.pop("model_revision", None)
-        self.refresh_model()
-
     def import_iq(self):
         path, _ = QFileDialog.getOpenFileName(self, "导入基带 I/Q 波形", "", "波形 (*.npy *.npz *.mat *.csv *.txt)")
         if path:
@@ -257,7 +259,7 @@ class StageDialog(QDialog):
     def accept(self):
         settings = dict(default_settings(self.stage.kind), **self.stage.settings)
         settings.pop("model_revision", None)
-        if self.stage.kind == "dac":
+        if self.stage.kind in DEVICE_KINDS:
             settings = {}
         for key, (edit, scale, decimals) in self.fields.items():
             value = edit.value()*scale
@@ -268,6 +270,7 @@ class StageDialog(QDialog):
             if self.stage.kind == "source":
                 source_wave(settings)
             self.stage.settings = settings
+            self.stage.enabled = self.enabled.isChecked()
         except Exception as exc:
             QMessageBox.warning(self, "参数无效", str(exc))
             return
@@ -336,7 +339,7 @@ class WaveformWorkspace(QDialog):
         available, version = runtime_status()
         self.backend.addItem("GNU Radio 原生块＋现有器件模型" if available else "GNU Radio（当前环境未安装）", "gnuradio")
         self.backend.model().item(1).setEnabled(available)
-        self.backend.setToolTip("GNU Radio 后端用于 FIR、增益、频偏；DAC、相噪、功放及 IIR 仍使用本项目模型。\n"+version)
+        self.backend.setToolTip("GNU Radio 后端用于 FIR、增益、频偏；DPD、DAC、相噪、功放及 IIR 使用本项目模型。\n"+version)
         run_row.addWidget(self.backend)
         self.run_button = self._button(run_row, "▶ 运行链路", self.run_chain)
         self.cancel_button = self._button(run_row, "取消", self.cancel_run)
@@ -396,6 +399,8 @@ class WaveformWorkspace(QDialog):
 
     def property_changed(self, node, name, value):
         # Selection, layout and node colors must not discard computed waveforms.
+        if name == "disabled" and isinstance(node, SignalNode):
+            self.update_node_caption(node)
         if name in ("settings", "device_model", "disabled"):
             self.invalidate()
 
@@ -419,7 +424,7 @@ class WaveformWorkspace(QDialog):
 
     def stage_from_node(self, node):
         return Stage(node.id, node.KIND, node.name(), copy.deepcopy(node.get_property("settings")),
-                     model_from_dict(node.get_property("device_model")))
+                     model_from_dict(node.get_property("device_model")), not node.disabled())
 
     def snapshot(self):
         if any(not isinstance(n, SignalNode) for n in self.graph.all_nodes()):
@@ -427,8 +432,6 @@ class WaveformWorkspace(QDialog):
         stages = [self.stage_from_node(n) for n in self.graph.all_nodes()]
         edges = [(p.node().id, node.id) for node in self.graph.all_nodes()
                  for port in node.input_ports() for p in port.connected_ports()]
-        if any(n.disabled() for n in self.graph.all_nodes()):
-            raise ValueError("请恢复禁用的模块，或删除该模块后重新连线；当前版本不支持旁路")
         return stages, edges
 
     def create_stage(self, kind, pos=None, stage=None):
@@ -438,6 +441,7 @@ class WaveformWorkspace(QDialog):
         if stage:
             node.set_property("settings", copy.deepcopy(stage.settings), push_undo=False)
             node.set_property("device_model", model_to_dict(stage.model), push_undo=False)
+            node.set_property("disabled", not stage.enabled, push_undo=False)
         self.update_node_caption(node)
         return node
 
@@ -449,6 +453,8 @@ class WaveformWorkspace(QDialog):
             text = "基带信号源\n外部 I/Q"
         else:
             text = KINDS[node.KIND]
+        if node.disabled():
+            text += " · " + ("关闭" if node.KIND == "source" else "旁路")
         node.set_name(text)
 
     def add_selected_kind(self):
@@ -477,6 +483,7 @@ class WaveformWorkspace(QDialog):
             if dialog.exec() == QDialog.DialogCode.Accepted:
                 node.set_property("settings", dialog.stage.settings)
                 node.set_property("device_model", model_to_dict(dialog.stage.model))
+                node.set_disabled(not dialog.stage.enabled)
                 self.update_node_caption(node)
                 self.invalidate()
         except Exception as exc:
@@ -488,7 +495,7 @@ class WaveformWorkspace(QDialog):
         self.rebuilding = True
         self.graph.clear_session()
         previous = None
-        for index, kind in enumerate(("source", "dac", "filter", "mixer", "pa")):
+        for index, kind in enumerate(("source", "dpd", "dac", "filter", "mixer", "pa")):
             node = self.create_stage(kind, [index*245, 30])
             if previous:
                 previous.output(0).connect_to(node.input(0), push_undo=False)

@@ -94,9 +94,6 @@ class ADDAOriginalEditorTests(unittest.TestCase):
             node.set_property("device_model", model_to_dict(device()))
             source = next(n for n in w.graph.all_nodes() if n.KIND == "source")
             source.set_property("settings", dict(source.get_property("settings"), fs=16e6))
-            # The default lowpass would exceed Nyquist at 16 MHz; use a compatible one.
-            filt = next(n for n in w.graph.all_nodes() if n.KIND == "filter")
-            filt.set_property("settings", dict(cutoff=3e6, taps=33))
             w.run_chain()
             deadline = time.monotonic()+15
             while w.worker and time.monotonic() < deadline:
