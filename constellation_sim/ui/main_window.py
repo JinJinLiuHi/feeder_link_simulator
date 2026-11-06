@@ -36,7 +36,7 @@ try:
         QHeaderView,
     )
 except ImportError as exc:
-    raise SystemExit("缺少 PySide6。请在启动软件的 Python 环境执行：python -m pip install -r requirements.txt") from exc
+    raise SystemExit("缺少 PySide6。请在启动软件的 Python 环境执行：python -m pip install --upgrade -r requirements.txt") from exc
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -45,7 +45,7 @@ try:
 except ImportError as exc:
     raise SystemExit(
         "PySide6已安装，但Qt WebEngine运行库缺失或DLL版本不一致。\n"
-        "请在独立的 Python 环境执行：python -m pip install -r requirements.txt"
+        "请在独立的 Python 环境执行：python -m pip install --upgrade -r requirements.txt"
     ) from exc
 
 

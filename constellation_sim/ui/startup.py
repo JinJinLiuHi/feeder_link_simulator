@@ -9,7 +9,7 @@ try:
     from PySide6.QtGui import QColor, QIcon, QPalette
     from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QProgressBar, QVBoxLayout, QWidget
 except ImportError as exc:
-    raise SystemExit("缺少 PySide6。请在启动软件的 Python 环境执行：python -m pip install -r requirements.txt") from exc
+    raise SystemExit("缺少 PySide6。请在启动软件的 Python 环境执行：python -m pip install --upgrade -r requirements.txt") from exc
 
 
 APP_NAME = "星地馈电链路与星座仿真验证系统"

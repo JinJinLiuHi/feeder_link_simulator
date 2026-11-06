@@ -7,11 +7,12 @@
 在项目根目录，用启动软件的同一 Python 环境安装依赖并运行。当前已在 Python 3.13 上验证。
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m pip install --upgrade -r requirements.txt
 python main.py
 ```
 
 `requirements.txt` 包含全软件的 Python 依赖，PySide6 会安装对应的 Qt WebEngine 组件。
+安装命令会检查当前环境，补装缺失项，并把清单中的依赖升级到满足版本条件的最新兼容版本。
 “链路仿真 → 全链路波形仿真”的模块连线、模型加载、波形观察及 GNU Radio 可选后端说明见 [全链路波形仿真](WAVEFORM_SIMULATION.md)。
 
 ## 代码结构

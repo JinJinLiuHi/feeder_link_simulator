@@ -22,7 +22,7 @@ try:
     from NodeGraphQt import BaseNode, NodeGraph
 except ImportError as exc:
     raise ImportError("缺少 NodeGraphQt 画布依赖。请在启动本软件的 Python 环境执行："
-                      "python -m pip install -r requirements.txt") from exc
+                      "python -m pip install --upgrade -r requirements.txt") from exc
 
 from link_sim.algorithm.waveform_chain import (
     Stage, Wave, KINDS, DEVICE_KINDS, MAX_SAMPLES, default_settings, export_wave,

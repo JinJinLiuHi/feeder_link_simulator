@@ -73,8 +73,7 @@ def blackman_harris(length):
 
 def _integrated_phase_error(offsets, psd_single):
     """σφ = sqrt(2·∫ Sφ(f)df)，其中 Sφ 是双边 PSD 的正频率一侧。"""
-    integrate = getattr(np, "trapezoid", np.trapz)
-    return float(np.sqrt(2.0 * integrate(psd_single, offsets)))
+    return float(np.sqrt(2.0 * np.trapezoid(psd_single, offsets)))
 
 
 def _complex_spectrum(x, fs):
