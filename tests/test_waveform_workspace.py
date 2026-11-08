@@ -11,8 +11,9 @@ from unittest.mock import patch
 
 import numpy as np
 from PySide6.QtTest import QTest
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialog, QDoubleSpinBox, QPushButton, QStyle, QStyleOptionSpinBox, QToolButton
+from PySide6.QtCore import Qt, QRect, QPoint
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QApplication, QDialog, QDialogButtonBox, QDoubleSpinBox, QPushButton, QStyle, QStyleOptionSpinBox, QToolButton
 
 from link_sim.algorithm.device_models import from_pa
 from link_sim.algorithm.pa_dpd import PADPDWidget
@@ -45,6 +46,38 @@ class WaveformWorkspaceTests(unittest.TestCase):
             time.sleep(.01)
         self.assertIsNone(self.workspace.worker, "Background computation did not finish")
         self.assertEqual(len(self.workspace.outputs), expected_outputs)
+
+    def test_source_dialog_first_show_fits_scaled_screen_and_keeps_actions_visible(self):
+        for area, font_size in ((QRect(40, 30, 1280, 720), 10), (QRect(40, 30, 800, 520), 14)):
+            with self.subTest(area=area, font_size=font_size):
+                dialog = StageDialog(Stage("source", "frame_source", "发射信号", default_settings("frame_source")), self.workspace)
+                dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+                dialog.setStyleSheet(EMBEDDED_STYLE)
+                dialog.setFont(QFont("Microsoft YaHei", font_size))
+                with patch.object(dialog, "available_area", return_value=area):
+                    dialog.show()
+                    self.app.processEvents()
+                    try:
+                        self.assertTrue(area.contains(dialog.frameGeometry()), str(dialog.frameGeometry()))
+                        table = dialog.frame_editor.table
+                        for column in (2, 3, 4):
+                            self.assertLessEqual(table.cellWidget(0, column).width(), table.columnWidth(column))
+                        actions = dialog.findChild(QDialogButtonBox)
+                        self.assertIs(actions.parentWidget(), dialog)
+                        self.assertTrue(dialog.rect().contains(actions.geometry()))
+                        for button in actions.buttons():
+                            bounds = QRect(button.mapTo(dialog, QPoint()), button.size())
+                            self.assertTrue(dialog.rect().contains(bounds))
+                        scroll = dialog.content_scroll
+                        scroll.ensureWidgetVisible(dialog.frame_editor.summary, 0, 0)
+                        self.app.processEvents()
+                        bounds = QRect(dialog.frame_editor.summary.mapTo(scroll.viewport(), QPoint()),
+                                       dialog.frame_editor.summary.size())
+                        self.assertTrue(scroll.viewport().rect().contains(bounds), str(bounds))
+                    finally:
+                        dialog.close()
+                        dialog.deleteLater()
+                        self.app.processEvents()
 
     def test_preview_and_export_source_rrc_without_valid_downstream_modules(self):
         w = self.workspace

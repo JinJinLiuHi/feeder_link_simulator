@@ -5,7 +5,7 @@ import copy
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QHeaderView, QLabel, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget, QSizePolicy,
 )
 
 from link_budget.algorithm.ber_core.catalog import FAMILIES, session_catalog
@@ -36,12 +36,14 @@ class FrameSourceEditor(QWidget):
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setDefaultSectionSize(40)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-        self.table.setMinimumHeight(240)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setMinimumHeight(120)
         root.addWidget(self.table, 1)
         self.summary = QLabel()
         self.summary.setWordWrap(True)
+        self.summary.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         self.summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         root.addWidget(self.summary)
         self.error = None
@@ -78,6 +80,7 @@ class FrameSourceEditor(QWidget):
                 mod.setMinimumWidth(100)
                 family.setMinimumWidth(135)
                 code.setMinimumWidth(215)
+                code.setMinimumContentsLength(16)
                 mod.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
                 code.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
                 for definition in self.catalog["modulations"]:

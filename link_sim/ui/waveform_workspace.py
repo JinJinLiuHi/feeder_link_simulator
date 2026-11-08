@@ -182,13 +182,26 @@ class StageDialog(QDialog):
         self.setWindowTitle("配置模块 · "+stage.name)
         self.resize(620, 590)
         root = QVBoxLayout(self)
+        content = root
+        self.content_scroll = None
+        self._initial_fit_done = False
+        if stage.kind == "frame_source":
+            body = QWidget()
+            content = QVBoxLayout(body)
+            content.setContentsMargins(0, 0, 0, 0)
+            self.content_scroll = QScrollArea()
+            self.content_scroll.setWidgetResizable(True)
+            self.content_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            self.content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.content_scroll.setWidget(body)
+            root.addWidget(self.content_scroll, 1)
         self.enabled = QCheckBox("启用信号源（关闭时输出零 I/Q）" if stage.kind in SOURCE_KINDS else
                                 "启用模块（关闭时旁路）")
         self.enabled.setChecked(stage.enabled)
-        root.addWidget(self.enabled)
+        content.addWidget(self.enabled)
         self.model_label = QLabel()
         self.model_label.setWordWrap(True)
-        root.addWidget(self.model_label)
+        content.addWidget(self.model_label)
         buttons = QHBoxLayout()
         if stage.kind in DEVICE_KINDS:
             for label, action in (("从模型库加载…", self.choose_model), ("导入模型文件…", self.import_model)):
@@ -200,8 +213,9 @@ class StageDialog(QDialog):
                 button = QPushButton(label)
                 button.clicked.connect(action)
                 buttons.addWidget(button)
-        root.addLayout(buttons)
+        content.addLayout(buttons)
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.fields = {}
         self.modulation = None
         self.frame_editor = None
@@ -226,16 +240,16 @@ class StageDialog(QDialog):
         if stage.kind == "frame_source":
             from .frame_source_editor import FrameSourceEditor
             self.resize(1180, 850)
-            root.addLayout(form)
+            content.addLayout(form)
             self.frame_editor = FrameSourceEditor(settings, self.fields, self)
-            root.addWidget(self.frame_editor, 2)
+            content.addWidget(self.frame_editor, 2)
         else:
-            root.addLayout(form)
+            content.addLayout(form)
         self.details = None
         if stage.kind != "frame_source":
             self.details = QPlainTextEdit()
             self.details.setReadOnly(True)
-            root.addWidget(self.details, 1)
+            content.addWidget(self.details, 1)
         if stage.kind in DEVICE_KINDS:
             hint_kind = {"rx_adc": "dac", "downmixer": "mixer", "rrc_tx": "filter", "rrc_rx": "filter"}.get(stage.kind, stage.kind)
             hint = QLabel({
@@ -246,7 +260,7 @@ class StageDialog(QDialog):
                 "pa": "按保存的 MP/GMP 系数计算非线性和记忆效应，保留信号幅度基准。",
             }[hint_kind])
             hint.setWordWrap(True)
-            root.addWidget(hint)
+            content.addWidget(hint)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         box.button(QDialogButtonBox.StandardButton.Ok).setText("应用")
         box.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
@@ -254,6 +268,35 @@ class StageDialog(QDialog):
         box.rejected.connect(self.reject)
         root.addWidget(box)
         self.refresh_model()
+
+    def available_area(self):
+        parent = self.parentWidget()
+        screen = parent.window().screen() if parent is not None else self.screen()
+        return screen.availableGeometry()
+
+    def fit_to_screen(self):
+        # Qt screen geometry already uses logical pixels, including display scaling.
+        area = self.available_area().adjusted(12, 12, -12, -12)
+        frame = self.frameGeometry()
+        border_width = max(0, frame.width()-self.width())
+        border_height = max(0, frame.height()-self.height())
+        self.resize(min(1180, max(1, area.width()-border_width)),
+                    min(850, max(1, area.height()-border_height)))
+        self.layout().activate()
+        frame = self.frameGeometry()
+        parent = self.parentWidget()
+        frame.moveCenter(parent.window().frameGeometry().center() if parent is not None else area.center())
+        frame.moveLeft(max(area.left(), min(frame.left(), area.right()-frame.width()+1)))
+        frame.moveTop(max(area.top(), min(frame.top(), area.bottom()-frame.height()+1)))
+        self.move(frame.topLeft())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.content_scroll is not None and not self._initial_fit_done:
+            self._initial_fit_done = True
+            self.fit_to_screen()
+            # Native title-bar dimensions can settle after the first show event.
+            QTimer.singleShot(0, self.fit_to_screen)
 
     def refresh_model(self):
         stage = self.stage
