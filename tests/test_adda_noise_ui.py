@@ -88,11 +88,13 @@ class ADDAOriginalEditorTests(unittest.TestCase):
 
     def test_canvas_observes_and_exports_the_added_error_separately(self):
         w = WaveformWorkspace()
+        from waveform_fixtures import configure_workspace_rrc
+        configure_workspace_rrc(w)
         try:
             node = next(n for n in w.graph.all_nodes() if n.KIND == "dac")
             from link_sim.algorithm.waveform_chain import model_to_dict
             node.set_property("device_model", model_to_dict(device()))
-            source = next(n for n in w.graph.all_nodes() if n.KIND == "source")
+            source = next(n for n in w.graph.all_nodes() if n.KIND == "frame_source")
             source.set_property("settings", dict(source.get_property("settings"), fs=16e6))
             w.run_chain()
             deadline = time.monotonic()+15

@@ -6,6 +6,7 @@ import cmath
 import math
 import re
 import json
+import copy
 
 MATRIX_ROOT = Path(__file__).resolve().parents[1] / "data" / "ldpc"
 FAMILIES = {
@@ -106,6 +107,8 @@ def load_catalog():
     profile_file = MATRIX_ROOT.parent / "nr_profiles.json"
     profiles = json.loads(profile_file.read_text(encoding="utf-8"))["profiles"]
     codes.extend(profiles)
+    if not any(c.get("k") == 512 and c.get("n") == 1024 for c in codes):
+        codes.append(dict(id="nr_512_1024", name="K512 · N1024 · 1/2", family="nr", k=512, n=1024))
     for path in sorted(MATRIX_ROOT.glob("**/*.base")):
         codes.append(
             dict(
@@ -121,3 +124,19 @@ def load_catalog():
         codes=codes,
         environment="计算设备在开始仿真时检测",
     )
+
+
+_session_catalog = None
+
+
+def session_catalog():
+    """Share the BER definitions with waveform editors during this app session."""
+    global _session_catalog
+    if _session_catalog is None:
+        _session_catalog = load_catalog()
+    return copy.deepcopy(_session_catalog)
+
+
+def update_session_catalog(modulations, codes):
+    global _session_catalog
+    _session_catalog = dict(modulations=copy.deepcopy(modulations), codes=copy.deepcopy(codes))

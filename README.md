@@ -13,7 +13,7 @@ python main.py
 
 `requirements.txt` 包含全软件的 Python 依赖，PySide6 会安装对应的 Qt WebEngine 组件。
 安装命令会检查当前环境，补装缺失项，并把清单中的依赖升级到满足版本条件的最新兼容版本。
-“链路仿真 → 全链路波形仿真”的模块连线、模型加载、波形观察及 GNU Radio 可选后端说明见 [全链路波形仿真](WAVEFORM_SIMULATION.md)。
+“链路仿真 → 全链路波形仿真”的模块连线、模型加载和波形观察说明见 [全链路波形仿真](WAVEFORM_SIMULATION.md)。
 
 ## 代码结构
 

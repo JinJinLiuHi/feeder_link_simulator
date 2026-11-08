@@ -1,8 +1,8 @@
 """Finite complex-envelope flowgraphs, independent of Qt and the model editors.
 
 Samples use normalized I/Q units; AD/DA errors come from the original model output.
-carrier_hz is metadata: an RF carrier is not sampled at GHz rates. Frequency
-offset blocks shift sampled spectra within the complex envelope.
+Displayed/exported frequencies are complex baseband. Frequency-offset blocks
+shift sampled spectra within the complex envelope.
 """
 
 from dataclasses import dataclass, field
@@ -13,17 +13,24 @@ import numpy as np
 from scipy import signal
 
 from .device_models import DeviceModel, manifest, prepare_model_for_storage, unpack_manifest, to_pa
-from .pa_simulation_core import load_waveform, positive_rate, simulate, waveform
+from .pa_simulation_core import load_waveform, positive_rate, waveform
 from .adc_noise_core import calibrate_model_noise, generate_model_noise
 from .mixer_noise_core import generate_phase_noise
 from .pa_dpd_core import signature
+from .pa_rate_adapter import simulate_at_rate
 
 
 MAX_SAMPLES = 262144
 KINDS = {"source": "基带信号源", "dpd": "数字预失真（DPD）", "dac": "AD/DA", "filter": "滤波器",
          "mixer": "上变频器", "pa": "功率放大器", "gain": "增益",
          "frequency": "频率偏移", "awgn": "加性白噪声"}
-DEVICE_KINDS = {"dpd": "dpd", "dac": "adda", "filter": "filter", "mixer": "mixer", "pa": "pa"}
+KINDS.update(frame_source="按帧发射信号", rrc_tx="发射 RRC", channel="无线信道",
+             xpic="交叉极化信道（XPIC）", fastica="FastICA 双路分离", downmixer="下变频器",
+             rx_adc="接收 ADC", rrc_rx="接收 RRC", sync="同步模块", sink="接收信号")
+DEVICE_KINDS = {"dpd": "dpd", "dac": "adda", "rx_adc": "adda", "filter": "filter",
+                "mixer": "mixer", "downmixer": "mixer", "pa": "pa", "rrc_tx": "filter", "rrc_rx": "filter"}
+DUAL_KINDS = ("xpic", "fastica")
+SOURCE_KINDS = ("source", "frame_source")
 
 
 @dataclass
@@ -35,6 +42,9 @@ class Wave:
     stop: int | None = None
     notes: tuple = ()
     added_error: np.ndarray | None = None
+    context: object | None = None
+    decoded_bits: np.ndarray | None = None
+    metrics: dict = field(default_factory=dict)
 
     def __post_init__(self):
         self.x = waveform(self.x)
@@ -82,10 +92,49 @@ def default_settings(kind):
         return {}
     return {
         "source": dict(fs=100e6, count=16384, sps=8, amplitude=.2, seed=2025, modulation="QPSK"),
+        "frame_source": dict(symbol_rate=700e6, seed=2026, lane=0, segments=4, words=2),
+        "rrc_tx": {}, "rrc_rx": {}, "sink": {},
+        "sync": dict(threshold=.4),
+        "channel": dict(snr_db=35., gain_db=0., offset_hz=0., delay=0.),
+        "xpic": dict(snr_db=35., xpd_a=10., xpd_b=10., delay_a=0., delay_b=0.),
+        "fastica": dict(window_offset=4500, window_length=3000),
         "gain": dict(gain_db=0.),
         "frequency": dict(offset_hz=0.),
         "awgn": dict(snr_db=30., seed=2025),
     }[kind].copy()
+
+
+def default_link(dual=False):
+    stages, edges, positions = [], [], {}
+    tx = ("frame_source", "rrc_tx", "dpd", "dac", "mixer", "pa", "channel")
+    rx = ("downmixer", "rx_adc", "rrc_rx", "sync", "sink")
+    lanes = ("A", "B") if dual else ("A",)
+    for lane_index, lane in enumerate(lanes):
+        previous = None
+        for column, kind in enumerate(tx + rx):
+            key = f"{lane}_{kind}"
+            settings = default_settings(kind)
+            if kind == "frame_source":
+                settings.update(lane=lane_index, seed=2026+lane_index)
+            label = "发射 DAC" if kind == "dac" else KINDS[kind]
+            stages.append(Stage(key, kind, f"{lane} · {label}", settings))
+            x = column*235 + (470 if dual and column >= len(tx) else 0)
+            positions[key] = [x, lane_index*250]
+            if previous and not (dual and kind == "downmixer"):
+                edges.append((previous, key))
+            previous = key
+    if dual:
+        for column, kind in enumerate(DUAL_KINDS):
+            settings = default_settings(kind)
+            if kind == "xpic":
+                settings["snr_db"] = 200.
+            stages.append(Stage(kind, kind, KINDS[kind], settings))
+            positions[kind] = [(len(tx)+column)*235, 100]
+        for port, lane in enumerate(lanes):
+            edges.extend(((f"{lane}_channel", "xpic", 0, port),
+                          ("xpic", "fastica", port, port),
+                          ("fastica", f"{lane}_downmixer", port, 0)))
+    return stages, edges, positions
 
 
 def source_wave(settings):
@@ -122,29 +171,81 @@ def import_source(path, fs):
                 filename=Path(path).name)
 
 
-def order_graph(stages, edges):
-    """Every node must be connected to one source; fan-out is allowed, no merges."""
+def edge_parts(edge):
+    if not isinstance(edge, (list, tuple)):
+        raise ValueError("连线格式无效")
+    if len(edge) == 2:
+        return edge[0], edge[1], 0, 0
+    if len(edge) != 4 or any(type(p) is not int or p < 0 for p in edge[2:]):
+        raise ValueError("连线端口无效")
+    return tuple(edge)
+
+
+def output_key(key, port=0):
+    return key if port == 0 else key + "::B"
+
+
+def upstream_graph(node_keys, edges, target):
+    """Return only the target and its prerequisites, ignoring downstream wiring."""
+    keys = set(node_keys)
+    if target not in keys:
+        raise ValueError("请选择流程图中已有的输出模块")
+    incoming = {}
+    for edge in edges:
+        if isinstance(edge, (tuple, list)) and len(edge) >= 2:
+            incoming.setdefault(edge[1], []).append(edge)
+    required, selected_edges, queue = set(), [], [target]
+    while queue:
+        key = queue.pop()
+        if key in required:
+            continue
+        if key not in keys:
+            raise ValueError("所选模块的上游连线指向不存在的模块")
+        required.add(key)
+        for edge in incoming.get(key, ()):
+            src, _, _, _ = edge_parts(edge)
+            selected_edges.append(edge)
+            queue.append(src)
+    return required, selected_edges
+
+
+def order_graph(stages, edges, *, target=None):
+    """Validate one/two-source DAGs with explicit ports for joint polarization nodes."""
+    if target is not None:
+        required, edges = upstream_graph([stage.key for stage in stages], edges, target)
+        stages = [stage for stage in stages if stage.key in required]
     by_id = {stage.key: stage for stage in stages}
     if not by_id or len(by_id) != len(stages) or len(stages) > 64:
         raise ValueError("流程图须包含 1–64 个模块，且模块编号不能重复")
     if any(s.kind not in KINDS for s in stages):
         raise ValueError("流程图包含未知模块")
-    sources = [s.key for s in stages if s.kind == "source"]
-    if len(sources) != 1:
-        raise ValueError("请保留且仅保留一个基带信号源")
-    parents, children = {}, {key: [] for key in by_id}
-    for src, dst in edges:
-        if src not in by_id or dst not in by_id or dst == sources[0] or dst in parents:
-            raise ValueError("连线无效：每个器件只接受一个输入，信号源不能接收输入")
-        parents[dst] = src
+    sources = [s.key for s in stages if s.kind in SOURCE_KINDS]
+    if not 1 <= len(sources) <= 2:
+        raise ValueError("请保留一个或两个发射信号源")
+    parents, children = {key: {} for key in by_id}, {key: [] for key in by_id}
+    for edge in edges:
+        src, dst, src_port, dst_port = edge_parts(edge)
+        if (src not in by_id or dst not in by_id or dst in sources or dst_port in parents[dst]
+                or src_port >= (2 if by_id[src].kind in DUAL_KINDS else 1)
+                or dst_port >= (2 if by_id[dst].kind in DUAL_KINDS else 1)):
+            raise ValueError("连线无效：请检查输入、输出端口与重复连接")
+        parents[dst][dst_port] = (src, src_port)
         children[src].append(dst)
-    queue, ordered = [sources[0]], []
+    for stage in stages:
+        expected = 0 if stage.kind in SOURCE_KINDS else 2 if stage.kind in DUAL_KINDS else 1
+        if len(parents[stage.key]) != expected:
+            raise ValueError(f"{stage.name} 需要 {expected} 路输入，请完成连线")
+    remaining = {key: len(p) for key, p in parents.items()}
+    queue, ordered = list(sources), []
     while queue:
         key = queue.pop(0)
         if key in ordered:
             raise ValueError("流程图不能形成环路")
         ordered.append(key)
-        queue.extend(children[key])
+        for child in children[key]:
+            remaining[child] -= 1
+            if remaining[child] == 0:
+                queue.append(child)
     if len(ordered) != len(stages):
         raise ValueError("存在未连接的模块或环路，请将所有模块连接到信号源")
     return [by_id[key] for key in ordered], parents
@@ -160,18 +261,22 @@ def _check_model(stage, fs):
     rate_key = {"filter": "fs", "pa": "sample_rate", "dpd": "sample_rate"}.get(model.kind)
     rate = model.parameters.get(rate_key)
     if rate is not None and not np.isclose(fs, rate, rtol=1e-9, atol=1e-6):
-        raise ValueError(f"模型采样率为 {rate/1e6:g} MHz，输入为 {fs/1e6:g} MHz；请修改信号源或更换模型")
+        if model.kind not in ("pa", "dpd"):
+            raise ValueError(f"模型采样率为 {rate/1e6:g} MHz，输入为 {fs/1e6:g} MHz；请修改信号源或更换模型")
     return model
 
 
-def process_stage(stage, incoming, backend="numpy", noise_stream=0):
+def process_stage(stage, incoming, *, noise_stream=0, oscillator_stream=0):
     if not stage.enabled:
         return Wave(incoming.x.copy(), incoming.fs, incoming.carrier_hz, incoming.start,
-                    incoming.stop, ("已旁路，直接传递输入 I/Q",))
+                    incoming.stop, ("已旁路，直接传递输入 I/Q",), context=incoming.context, metrics=incoming.metrics)
+    if stage.kind in ("rrc_tx", "rrc_rx", "sync", "sink", "channel"):
+        from .framed_link import process_framed_stage
+        return process_framed_stage(stage, incoming)
     model = _check_model(stage, incoming.fs)
     if stage.kind in DEVICE_KINDS and model is None:
         return Wave(incoming.x.copy(), incoming.fs, incoming.carrier_hz, incoming.start,
-                    incoming.stop, ("未加载器件模型，当前为理想直通；双击加载或导入模型",))
+                    incoming.stop, ("未加载器件模型，当前为理想直通；双击加载或导入模型",), context=incoming.context)
 
     p = stage.settings
     x, fs = incoming.x, incoming.fs
@@ -189,19 +294,14 @@ def process_stage(stage, incoming, backend="numpy", noise_stream=0):
             h = model.arrays.get("h")
             if h is None:
                 h = b / a[0]
-            if backend == "gnuradio":
-                from .waveform_gnuradio import native_block
-                y = native_block(x, "fir", taps=h)
-                notes.append("GNU Radio 原生 FIR")
-            else:
-                y = np.convolve(x, h)[:len(x)]
+            y = np.convolve(x, h)[:len(x)]
             start += len(h)-1
             notes.append(f"FIR 时域卷积；起始 {len(h)-1} 点为启动瞬态；尾部未补零冲洗")
         else:
             # The time-domain recurrence accounts for the entire IIR impulse response.
             y = signal.sosfilt(sos / sos[:, 3:4], x) if sos is not None else signal.lfilter(b, a, x)
             notes.append("IIR 时域递推；输出包含启动瞬态，未自动判定稳定时间")
-    elif stage.kind == "dac":
+    elif stage.kind in ("dac", "rx_adc"):
         # Keep the historical node key 'dac' so saved chain diagrams still load.
         seed = 2025
         if noise_stream:
@@ -215,30 +315,34 @@ def process_stage(stage, incoming, backend="numpy", noise_stream=0):
                      f"模型估计噪声基底 {reference.floor_dbfs:.2f} dBFS/频点；"
                      f"Pn={power:.6g}；理论噪声 RMS {np.sqrt(power):.4g}；"
                      f"实测 RMS {np.sqrt(measured):.4g}；自动匹配链路采样率，不叠加杂散")
-    elif stage.kind == "mixer":
-        phi, _, _, _ = generate_phase_noise(fs, len(x), model.parameters["anchors"])
-        y = x*np.exp(1j*phi)
+    elif stage.kind in ("mixer", "downmixer"):
+        seed = 2025 if oscillator_stream == 0 else int(np.random.SeedSequence([2025, oscillator_stream]).generate_state(1)[0])
+        phi, _, _, _ = generate_phase_noise(fs, len(x), model.parameters["anchors"], seed=seed)
+        y = x*np.exp((1j if stage.kind == "mixer" else -1j)*phi)
         notes.append(f"{model.name or '混频器模型'}；按链路 {fs/1e6:g} MHz、{len(x):,} 点生成本振相噪；"
                      f"频点间隔 {fs/len(x):.4g} Hz；相噪 RMS {np.std(phi[start:stop]):.5g} rad；时域逐点旋转")
     elif stage.kind in ("pa", "dpd"):
-        _, y, valid = simulate(to_pa(model), x, fs)
+        pa = to_pa(model)
+        _, y, valid = simulate_at_rate(pa, x, fs)
         start += valid.start
         stop -= len(x) - valid.stop
         notes.append(f"{model.name}；按保存系数计算，未重新归一化")
+        if pa.sample_rate is not None and not np.isclose(fs, pa.sample_rate, rtol=1e-9, atol=1e-6):
+            notes.append(f"跨采样率时域等效（近似）：辨识 {pa.sample_rate/1e6:g} MHz，链路 {fs/1e6:g} MHz；"
+                         f"每个模型延迟映射为 {fs/pa.sample_rate:.8g} 个链路采样点；保留原系数及物理记忆时间，"
+                         "采用分数延迟插值，不对输入信号降采样")
+            context = incoming.context
+            if context is not None and context.shaper is not None:
+                bandwidth = fs/context.shaper.samples_per_symbol*(1+context.shaper.rolloff)
+                if bandwidth > pa.sample_rate:
+                    notes.append(f"当前 RRC 理论双边带宽 {bandwidth/1e6:g} MHz，超过辨识数据采样率 "
+                                 f"{pa.sample_rate/1e6:g} MHz；宽带响应属于模型外推，需宽带实测数据验证")
     elif stage.kind == "gain":
         gain = 10**(_number(p, "gain_db", 0., -100., 100.)/20)
-        if backend == "gnuradio":
-            from .waveform_gnuradio import native_block
-            y = native_block(x, "gain", gain=gain)
-        else:
-            y = x*gain
+        y = x*gain
     elif stage.kind == "frequency":
         offset = _number(p, "offset_hz", 0., -fs/2, fs/2)
-        if backend == "gnuradio":
-            from .waveform_gnuradio import native_block
-            y = native_block(x, "frequency", offset=offset, fs=fs)
-        else:
-            y = x*np.exp(2j*np.pi*offset*np.arange(len(x))/fs)
+        y = x*np.exp(2j*np.pi*offset*np.arange(len(x))/fs)
         notes.append("频偏移动采样频谱，请确保信号带宽加频偏未超过 Nyquist")
     elif stage.kind == "awgn":
         snr = _number(p, "snr_db", 30., -40., 200.)
@@ -251,30 +355,38 @@ def process_stage(stage, incoming, backend="numpy", noise_stream=0):
         raise ValueError("未知处理模块")
     if stop-start < 4:
         raise ValueError("波形过短，器件记忆/滤波器启动瞬态后不足 4 个有效点")
-    return Wave(y, fs, carrier, start, stop, tuple(notes), added_error)
+    return Wave(y, fs, carrier, start, stop, tuple(notes), added_error, context=incoming.context)
 
 
-def run_graph(stages, edges, backend="numpy", progress=None, cancelled=None):
-    if backend not in ("numpy", "gnuradio"):
-        raise ValueError("未知计算后端")
-    if backend == "gnuradio":
-        from .waveform_gnuradio import require_runtime
-        require_runtime()
-    ordered, parents = order_graph(stages, edges)
+def run_graph(stages, edges, *, target=None, progress=None, cancelled=None):
+    ordered, parents = order_graph(stages, edges, target=target)
     outputs, pending_dpd = {}, {}
-    noise_stream = 0
+    # Stable across full and partial runs, including B-only previews.
+    noise_streams = {stage.key: i for i, stage in enumerate(s for s in stages if s.kind in ("dac", "rx_adc"))}
+    oscillator_streams = {stage.key: i for i, stage in enumerate(s for s in stages if s.kind in ("mixer", "downmixer"))}
     for index, stage in enumerate(ordered):
         if cancelled and cancelled():
             raise InterruptedError("仿真已取消")
         try:
-            if stage.kind == "source":
-                wave = source_wave(stage.settings)
+            if stage.kind in SOURCE_KINDS:
+                if stage.kind == "frame_source":
+                    from .framed_link import frame_source
+                    wave = frame_source(stage.settings)
+                else:
+                    wave = source_wave(stage.settings)
                 if not stage.enabled:
-                    wave = Wave(np.zeros_like(wave.x), wave.fs, notes=("信号源已关闭，输出零 I/Q",))
+                    wave = Wave(np.zeros_like(wave.x), wave.fs, notes=("信号源已关闭，输出零 I/Q",), context=wave.context)
                 outputs[stage.key] = wave
+            elif stage.kind in DUAL_KINDS:
+                from .framed_link import process_dual_stage
+                incoming = [outputs[output_key(*parents[stage.key][p])] for p in range(2)]
+                values = process_dual_stage(stage, incoming)
+                for port, value in enumerate(values):
+                    outputs[output_key(stage.key, port)] = value
+                    pending_dpd[output_key(stage.key, port)] = pending_dpd.get(output_key(*parents[stage.key][port]))
             else:
-                parent = parents[stage.key]
-                dpd = pending_dpd.get(parent)
+                parent, port = parents[stage.key][0]
+                dpd = pending_dpd.get(output_key(parent, port))
                 if stage.enabled and stage.model is not None:
                     if stage.kind == "dpd":
                         if dpd is not None:
@@ -285,10 +397,10 @@ def run_graph(stages, edges, backend="numpy", progress=None, cancelled=None):
                             raise ValueError(f"与上游数字预失真「{dpd.name or '未命名 DPD'}」不配对，请更换模型或旁路 DPD")
                         dpd = None
                 pending_dpd[stage.key] = dpd
-                outputs[stage.key] = process_stage(stage, outputs[parent], backend, noise_stream=noise_stream)
-            if stage.kind == "dac":
-                noise_stream += 1
-        except (ValueError, FloatingPointError) as exc:
+                outputs[stage.key] = process_stage(stage, outputs[output_key(parent, port)],
+                                                  noise_stream=noise_streams.get(stage.key, 0),
+                                                  oscillator_stream=oscillator_streams.get(stage.key, 0))
+        except (ValueError, RuntimeError, FloatingPointError) as exc:
             raise ValueError(f"{stage.name}：{exc}") from exc
         if progress:
             progress(index+1, len(ordered), stage.name)
@@ -320,10 +432,22 @@ def model_from_dict(data):
     return unpack_manifest(data, arrays)
 
 
-def save_chain(path, stages, edges, positions, backend="numpy"):
+def save_chain(path, stages, edges, positions):
     order_graph(stages, edges)
-    payload = dict(format="feeder-waveform-chain", version=1, backend=backend, edges=edges,
-                   nodes=[dict(key=s.key, kind=s.kind, name=s.name, settings=s.settings,
+    def portable_settings(stage):
+        if stage.kind != "frame_source":
+            return stage.settings
+        from .frame_config import frame_plan, portable_code
+        settings = dict(stage.settings)
+        settings.pop("amplitude", None)
+        rows = frame_plan(settings)
+        for group in rows:
+            for item in group:
+                item["code"] = portable_code(item["code"])
+        settings["business_frames"] = rows
+        return settings
+    payload = dict(format="feeder-waveform-chain", version=1, edges=edges,
+                   nodes=[dict(key=s.key, kind=s.kind, name=s.name, settings=portable_settings(s),
                                model=model_to_dict(s.model), enabled=s.enabled,
                                pos=positions.get(s.key, [0, 0])) for s in stages])
     Path(path).write_text(json.dumps(payload, ensure_ascii=False, allow_nan=False, indent=2), encoding="utf-8")
@@ -356,15 +480,34 @@ def load_chain(path):
         stages.append(stage)
         positions[stage.key] = pos.tolist()
     order_graph(stages, data["edges"])
-    backend = data.get("backend", "numpy")
-    if backend not in ("numpy", "gnuradio"):
-        raise ValueError("未知计算后端")
-    return stages, data["edges"], positions, backend
+    # Move legacy source-owned shaping parameters into the independent Tx RRC.
+    by_key = {s.key: s for s in stages}
+    for edge in data["edges"]:
+        src, dst, _, _ = edge_parts(edge)
+        source, target = by_key[src], by_key[dst]
+        if source.kind == "frame_source" and target.kind == "rrc_tx" and "fs" in source.settings:
+            for key in ("sps", "rolloff", "span"):
+                target.settings.setdefault(key, source.settings.get(key, {"sps": 4, "rolloff": .25, "span": 8}[key]))
+    for stage in stages:
+        if stage.kind == "rrc_tx":
+            if stage.model is None and any(key in stage.settings for key in ("sps", "rolloff", "span")):
+                from .rrc_stage import legacy_rrc_model
+                stage.model = legacy_rrc_model(stage.settings)
+            stage.settings = {}
+    # Historical execution-mode metadata is ignored; all chains run locally.
+    return stages, data["edges"], positions
 
 
 def export_wave(path, wave):
     """NPZ is compatible with the existing PA waveform importer (x/sampleRate)."""
-    np.savez_compressed(path, x=wave.x, sampleRate=wave.fs, carrierHz=wave.carrier_hz,
+    from .waveform_spectrum import amplitude_spectrum
+    frequency, level = amplitude_spectrum(wave.valid, wave.fs)
+    np.savez_compressed(path, x=wave.x, sampleRate=wave.fs,
+                        frequencyHz=frequency, spectrumDb=level,
                         validStart=wave.start, validStop=wave.stop, units="normalized IQ",
                         notes=np.asarray(wave.notes, dtype=str),
-                        **({"addedError": wave.added_error} if wave.added_error is not None else {}))
+                        metrics=json.dumps(wave.metrics),
+                       **({"transmittedBits": wave.context.bits} if wave.context is not None else {}),
+                       **({"addedError": wave.added_error} if wave.added_error is not None else {}),
+                       **({"receivedBits": wave.decoded_bits}
+                          if wave.decoded_bits is not None else {}))

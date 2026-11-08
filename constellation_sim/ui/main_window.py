@@ -1234,8 +1234,9 @@ class MainWindow(QMainWindow):
         """)
 
     def _spin(self, minimum, maximum, value, decimals=None, suffix=""):
+        from link_sim.ui.numeric_inputs import hide_step_buttons
         box = QDoubleSpinBox() if decimals is not None else QSpinBox()
-        box.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        hide_step_buttons(box)
         box.setRange(minimum, maximum); box.setValue(value)
         if decimals is not None: box.setDecimals(decimals)
         box.setSuffix(suffix); return box

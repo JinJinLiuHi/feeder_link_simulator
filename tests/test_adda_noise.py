@@ -89,8 +89,8 @@ class ADDANoiseFloorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             path = Path(folder)/"chain.json"
             save_chain(path, stages, edges, {})
-            loaded, links, _, backend = load_chain(path)
-            after = run_graph(loaded, links, backend)
+            loaded, links, _ = load_chain(path)
+            after = run_graph(loaded, links)
             assert_allclose(after["b"].x, before["b"].x, rtol=0, atol=0)
             self.assertEqual(loaded[1].model.parameters, model.parameters)
             export_wave(Path(folder)/"output.npz", after["a"])

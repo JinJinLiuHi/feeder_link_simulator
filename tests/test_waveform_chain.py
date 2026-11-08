@@ -3,6 +3,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+import json
 
 import numpy as np
 from numpy.testing import assert_allclose
@@ -19,10 +20,42 @@ from link_sim.algorithm.waveform_chain import (
     Wave, Stage, default_settings, export_wave, import_source, load_chain,
     order_graph, process_stage, run_graph, save_chain, source_wave,
 )
-from link_sim.algorithm.waveform_gnuradio import native_block, runtime_status
 
 
 class WaveformChainTests(unittest.TestCase):
+    def test_target_ignores_unconfigured_downstream_and_disconnected_branches(self):
+        stages = [Stage("s", "source", "输入", default_settings("source")),
+                  Stage("g", "gain", "增益", dict(gain_db=6.)),
+                  Stage("bad", "frequency", "未配置后级", dict(offset_hz="invalid")),
+                  Stage("unused", "gain", "未连接模块")]
+        edges = [("s", "g"), ("g", "bad")]
+        outputs = run_graph(stages, edges, target="g")
+        self.assertEqual(set(outputs), {"s", "g"})
+        assert_allclose(outputs["g"].x, outputs["s"].x*10**(.3))
+        with self.assertRaises(ValueError):
+            run_graph(stages, edges)
+        with self.assertRaises(ValueError):
+            run_graph(stages, edges, target="bad")
+        with self.assertRaises(ValueError):
+            run_graph(stages, [], target="g")
+
+    def test_single_lane_preview_preserves_noise_and_oscillator_streams(self):
+        adc = DeviceModel("adda", dict(n_bits=12, fs=100e6, nfft=1024, f_sig=1e6,
+            noise_density_dbfs_hz=-140., sfdr_target=60., device_profile="自定义", spur_freqs=[2e6], spur_dbfs=[-60.]))
+        mixer = DeviceModel("mixer", dict(fs=10e6, sim_time=.001, f_if_in=1e6,
+                                         anchors=[[1e3, -60.], [1e6, -90.]]))
+        stages, edges = [], []
+        for lane in ("a", "b"):
+            stages.extend([Stage(lane, "source", lane, default_settings("source")),
+                           Stage(lane+"d", "dac", lane+" DAC", model=adc),
+                           Stage(lane+"m", "mixer", lane+" 混频器", model=mixer)])
+            edges.extend([(lane, lane+"d"), (lane+"d", lane+"m")])
+        full = run_graph(stages, edges)
+        partial = run_graph(stages, edges, target="bm")
+        self.assertEqual(set(partial), {"b", "bd", "bm"})
+        assert_allclose(partial["bd"].x, full["bd"].x, rtol=0, atol=0)
+        assert_allclose(partial["bm"].x, full["bm"].x, rtol=0, atol=0)
+
     def setUp(self):
         self.fs = 100e6
         self.wave = source_wave(default_settings("source"))
@@ -76,9 +109,9 @@ class WaveformChainTests(unittest.TestCase):
                 assert_allclose(loaded.arrays["h"], pole**np.arange(4096), rtol=1e-12)
             path = Path(folder)/"scheme.json"
             save_chain(path, [source, filt], edges, {})
-            stages, edges, _, backend = load_chain(path)
+            stages, edges, _ = load_chain(path)
         np.testing.assert_array_equal(stages[1].model.arrays["h"], loaded.arrays["h"])
-        y = run_graph(stages, edges, backend)["f"].x
+        y = run_graph(stages, edges)["f"].x
         assert_allclose(y, x[0]*pole**np.arange(len(x)), rtol=1e-12)
 
     def test_import_complex_impulse_response_and_convolve_in_time(self):
@@ -183,7 +216,7 @@ class WaveformChainTests(unittest.TestCase):
                       Stage("a", "dac", "AD/DA"), Stage("p", "pa", "功放", model=pa_model)]
             scheme = Path(folder)/"dpd.json"
             save_chain(scheme, stages, edges, {})
-            stages, edges, _, _ = load_chain(scheme)
+            stages, edges, _ = load_chain(scheme)
         source, predistorter, _, amplifier = stages
         out = run_graph(stages, edges)
         assert_allclose(out["d"].x, dpd.predict(out["s"].x))
@@ -212,10 +245,11 @@ class WaveformChainTests(unittest.TestCase):
         self.assertEqual(y.start, 7)
         self.assertEqual(y.stop, len(self.wave.x)-8)
 
-    def test_sample_rate_mismatch_rejected(self):
-        model = from_pa(PAModel(np.array([[1.]]), "memPoly", 1, sample_rate=200e6))
+    def test_fixed_filter_sample_rate_mismatch_rejected(self):
+        model = DeviceModel("filter", dict(FILTER_DEFAULTS, impl="FIR", fs=200e6),
+                            dict(b=np.array([1., .2]), a=np.array([1.])))
         with self.assertRaisesRegex(ValueError, "采样率"):
-            process_stage(Stage("p", "pa", "功放", {}, model), self.wave)
+            process_stage(Stage("f", "filter", "滤波器", {}, model), self.wave)
 
     def test_frequency_shift_and_awgn_snr(self):
         n = 16384
@@ -257,8 +291,8 @@ class WaveformChainTests(unittest.TestCase):
             path = folder/"test.chain.json"
             save_chain(path, stages, edges, {"s": [0, 0], "p": [200, 0]})
             input_path.unlink()
-            loaded, links, positions, backend = load_chain(path)
-            actual = run_graph(loaded, links, backend)
+            loaded, links, positions = load_chain(path)
+            actual = run_graph(loaded, links)
             assert_allclose(actual["p"].x, expected["p"].x)
             self.assertEqual(positions["p"], [200, 0])
             export_wave(folder/"output.npz", actual["p"])
@@ -281,13 +315,22 @@ class WaveformChainTests(unittest.TestCase):
         with self.assertRaises(InterruptedError):
             run_graph(stages, edges, cancelled=lambda: True)
 
-    @unittest.skipUnless(runtime_status()[0], "GNU Radio runtime not installed")
-    def test_gnuradio_native_blocks_match_numerical_reference(self):
-        assert_allclose(native_block(self.wave.x, "gain", gain=2.), 2*self.wave.x, atol=1e-6)
-        taps = signal.firwin(17, .2)
-        assert_allclose(native_block(self.wave.x, "fir", taps=taps), signal.lfilter(taps, [1.], self.wave.x), atol=1e-6)
-        expected = self.wave.x*np.exp(2j*np.pi*1e6*np.arange(len(self.wave.x))/self.fs)
-        assert_allclose(native_block(self.wave.x, "frequency", fs=self.fs, offset=1e6), expected, atol=2e-4)
+    def test_legacy_execution_mode_is_ignored_and_not_resaved(self):
+        stages = [Stage("s", "source", "信号源", default_settings("source")),
+                  Stage("g", "gain", "增益", dict(gain_db=6.))]
+        edges = [("s", "g")]
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/"legacy.chain.json"
+            save_chain(path, stages, edges, {})
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self.assertNotIn("backend", data)
+            data["backend"] = "legacy-native"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            loaded, links, positions = load_chain(path)
+            output = run_graph(loaded, links)
+            assert_allclose(output["g"].x, output["s"].x*10**(.3))
+            save_chain(path, loaded, links, positions)
+            self.assertNotIn("backend", json.loads(path.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":

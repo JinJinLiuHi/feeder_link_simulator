@@ -246,9 +246,9 @@ class BERAnalysisDialog(ModuleDialog):
         self.del_code.clicked.connect(self.remove_code)
         self.draw_curves()
         try:
-            from .ber_core.catalog import load_catalog
+            from .ber_core.catalog import session_catalog
 
-            self.catalog_loaded(load_catalog())
+            self.catalog_loaded(session_catalog())
         except Exception as error:
             self.catalog_failed(str(error))
 
@@ -336,6 +336,7 @@ class BERAnalysisDialog(ModuleDialog):
                 self.modulation.addItem(mod["name"], mod)
                 self.modulation.setCurrentIndex(self.modulation.count() - 1)
             self.mod_changed()
+            self.share_catalog()
 
         dialog.saved.connect(save)
         self.editors.append(dialog)
@@ -344,6 +345,11 @@ class BERAnalysisDialog(ModuleDialog):
     def remove_mod(self):
         if self.modulation.currentData().get("custom"):
             self.modulation.removeItem(self.modulation.currentIndex())
+            self.share_catalog()
+
+    def share_catalog(self):
+        from .ber_core.catalog import update_session_catalog
+        update_session_catalog([self.modulation.itemData(i) for i in range(self.modulation.count())], self.codes)
 
     def open_code_editor(self, edit=False):
         original = copy.deepcopy(self.coding.currentData()) if edit else None
@@ -359,6 +365,7 @@ class BERAnalysisDialog(ModuleDialog):
                 if self.coding.itemData(i)["id"] == code["id"]:
                     self.coding.setCurrentIndex(i)
                     break
+            self.share_catalog()
 
         dialog.saved.connect(save)
         self.editors.append(dialog)
@@ -369,6 +376,7 @@ class BERAnalysisDialog(ModuleDialog):
         if code and code.get("custom"):
             self.codes = [c for c in self.codes if c["id"] != code["id"]]
             self.populate_families()
+            self.share_catalog()
 
     def request(self):
         from .ber_core.simulation import snr_grid
