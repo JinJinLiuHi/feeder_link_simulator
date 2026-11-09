@@ -37,6 +37,8 @@ def _capture_device(dialog):
         if model is None:
             raise ValueError("请先拟合、训练或导入一个模型")
         return from_pa(model)
+    if kind == "noise":
+        return DeviceModel(kind, dialog._collect_cfg()).validated()
     if kind == "adda":
         _numeric_fields(dialog, ("e_bits", "e_fs", "e_nfft", "e_fsig", "e_noise_density", "e_sfdr_target", "e_spur_count"))
         for name, low, high in (("e_bits", 2, 32), ("e_nfft", 256, 1048576), ("e_spur_count", 1, 32)):
@@ -92,7 +94,12 @@ def apply_device(dialog, model):
     if model.kind != dialog.MODEL_KIND:
         raise ValueError("模型类型与器件编辑器不匹配")
     p = model.parameters
-    if model.kind == "adda":
+    if model.kind == "noise":
+        dialog.fs.setValue(p["fs"]/1e6)
+        dialog.density.setValue(p["density_dbfs_hz"])
+        dialog.seed.setValue(p["seed"])
+        dialog._run()
+    elif model.kind == "adda":
         from link_sim.algorithm.ad_model import run_adc_model
         kwargs = {k: p[k] for k in ("n_bits", "fs", "nfft", "f_sig", "spur_freqs", "spur_dbfs", "noise_density_dbfs_hz")}
         result = run_adc_model(**kwargs)

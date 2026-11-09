@@ -24,10 +24,10 @@ MAX_SAMPLES = 262144
 KINDS = {"source": "基带信号源", "dpd": "数字预失真（DPD）", "dac": "AD/DA", "filter": "滤波器",
          "mixer": "上变频器", "pa": "功率放大器", "gain": "增益",
          "frequency": "频率偏移", "awgn": "加性白噪声"}
-KINDS.update(frame_source="按帧发射信号", rrc_tx="发射 RRC", channel="无线信道",
+KINDS.update(noise="底噪模型", frame_source="按帧发射信号", rrc_tx="发射 RRC", channel="无线信道",
              xpic="交叉极化信道（XPIC）", fastica="FastICA 双路分离", downmixer="下变频器",
              rx_adc="接收 ADC", rrc_rx="接收 RRC", sync="同步模块", sink="接收信号")
-DEVICE_KINDS = {"dpd": "dpd", "dac": "adda", "rx_adc": "adda", "filter": "filter",
+DEVICE_KINDS = {"noise": "noise","dpd": "dpd", "dac": "adda", "rx_adc": "adda", "filter": "filter",
                 "mixer": "mixer", "downmixer": "mixer", "pa": "pa", "rrc_tx": "filter", "rrc_rx": "filter"}
 DUAL_KINDS = ("xpic", "fastica")
 SOURCE_KINDS = ("source", "frame_source")
@@ -337,6 +337,11 @@ def process_stage(stage, incoming, *, noise_stream=0, oscillator_stream=0):
                 if bandwidth > pa.sample_rate:
                     notes.append(f"当前 RRC 理论双边带宽 {bandwidth/1e6:g} MHz，超过辨识数据采样率 "
                                  f"{pa.sample_rate/1e6:g} MHz；宽带响应属于模型外推，需宽带实测数据验证")
+    elif stage.kind == "noise":
+        from .noise_core import generate_noise
+        added_error = generate_noise(len(x), fs, model.parameters["density_dbfs_hz"], model.parameters["seed"] + noise_stream)
+        y = x + added_error
+        notes.append(f"底噪密度 {model.parameters['density_dbfs_hz']:g} dBFS/Hz；按输入采样率生成复高斯白噪声")
     elif stage.kind == "gain":
         gain = 10**(_number(p, "gain_db", 0., -100., 100.)/20)
         y = x*gain
@@ -362,7 +367,7 @@ def run_graph(stages, edges, *, target=None, progress=None, cancelled=None):
     ordered, parents = order_graph(stages, edges, target=target)
     outputs, pending_dpd = {}, {}
     # Stable across full and partial runs, including B-only previews.
-    noise_streams = {stage.key: i for i, stage in enumerate(s for s in stages if s.kind in ("dac", "rx_adc"))}
+    noise_streams = {stage.key: i for i, stage in enumerate(s for s in stages if s.kind in ("dac", "rx_adc", "noise"))}
     oscillator_streams = {stage.key: i for i, stage in enumerate(s for s in stages if s.kind in ("mixer", "downmixer"))}
     for index, stage in enumerate(ordered):
         if cancelled and cancelled():

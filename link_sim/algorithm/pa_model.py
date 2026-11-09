@@ -396,7 +396,7 @@ class PAModelDialog(ModuleDialog):
         fl = QHBoxLayout(); fl.setSpacing(6)
         self.e_file = QLineEdit(); self.e_file.setReadOnly(True)
         self.e_file.setStyleSheet(_ES)
-        self.e_file.setPlaceholderText("helperPACharSavedData100MHz.mat")
+        self.e_file.setPlaceholderText("请选择功放实测数据文件（.mat）")
         btn_browse = QPushButton("浏览…")
         btn_browse.setFixedWidth(64); btn_browse.setFixedHeight(28)
         btn_browse.setStyleSheet(

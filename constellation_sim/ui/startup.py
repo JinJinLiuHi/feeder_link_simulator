@@ -21,6 +21,7 @@ class StartupWindow(QWidget):
         self.setWindowTitle(APP_NAME)
         self.setFixedSize(500, 160)
         self.main_window = None
+        self._finished = False
         self.setStyleSheet("""
             QWidget { background: #07131f; color: #d9ecf7; }
             QProgressBar { background: #0d2638; border: 1px solid #24516a; border-radius: 5px; }
@@ -64,16 +65,57 @@ class StartupWindow(QWidget):
             self.main_window = window_type(load_map=False)
             self.main_window.web.loadProgress.connect(self.map_progress)
             self.main_window.web.loadFinished.connect(self.finish)
-            self.update_progress(70, "正在加载 Cesium 地图…")
-            self.map_timeout.start()
-            self.main_window.load_map()
+            from link_sim.ui.workspace import LazyDialogPage
+            self._preload_pages = self.main_window.findChildren(LazyDialogPage)
+            self._preload_index = 0
+            QTimer.singleShot(0, self.preload_next_page)
         except Exception as exc:
             self.fail(exc)
 
+    def preload_next_page(self):
+        """Build every link-simulation page before exposing the main window."""
+        if self._preload_index == len(self._preload_pages):
+            self.update_progress(80, "正在加载 Cesium 地图…")
+            self.map_timeout.start()
+            try:
+                self.main_window.load_map()
+            except Exception as exc:
+                self.fail(exc)
+            return
+        page = self._preload_pages[self._preload_index]
+        labels = {
+            "PAModelDialog": "功放", "FilterModelDialog": "滤波器",
+            "MixerModelDialog": "混频器", "ADDAModelDialog": "ADC/DAC",
+            "NoiseModelDialog": "底噪模型", "ModelLibraryDialog": "模型库",
+            "WaveformWorkspace": "全链路仿真",
+        }
+        label = labels.get(page.class_name, page.class_name)
+        total = len(self._preload_pages)
+        self.update_progress(45 + 35*self._preload_index//total,
+                             f"正在初始化链路仿真 · {label}（{self._preload_index+1}/{total}）…")
+        if page.loaded:
+            self._preload_index += 1
+            QTimer.singleShot(0, self.preload_next_page)
+        else:
+            page.load_finished.connect(self.preload_page_finished)
+            page.ensure_loaded(background=True)
+
+    def preload_page_finished(self, ok, message):
+        page = self._preload_pages[self._preload_index]
+        page.load_finished.disconnect(self.preload_page_finished)
+        if not ok:
+            self.fail(RuntimeError(f"链路仿真模块初始化失败：{page.class_name}\n{message}"))
+            return
+        self._preload_index += 1
+        QTimer.singleShot(0, self.preload_next_page)
+
     def map_progress(self, value):
-        self.update_progress(70 + 29*value//100, f"正在加载 Cesium 地图… {value}%")
+        self.update_progress(80 + 19*value//100, f"正在加载 Cesium 地图… {value}%")
 
     def finish(self, map_ok=None):
+        if self._finished:
+            return
+        self._finished = True
         self.map_timeout.stop()
         self.main_window.web.loadProgress.disconnect(self.map_progress)
         self.main_window.web.loadFinished.disconnect(self.finish)

@@ -36,8 +36,8 @@ class ADDAOriginalEditorTests(unittest.TestCase):
     def test_original_page_and_model_binding_are_restored(self):
         channel = ChannelWorkspace()
         tabs = channel.findChild(QTabWidget)
-        self.assertEqual(tabs.tabText(1), "ADC/DAC")
-        page = tabs.widget(1)
+        self.assertEqual(tabs.tabText(3), "ADC/DAC")
+        page = tabs.widget(3)
         self.assertIsInstance(page, LazyDialogPage)
         page.ensure_loaded()
         try:

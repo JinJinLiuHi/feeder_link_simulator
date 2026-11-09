@@ -235,6 +235,11 @@ class MixerModelDialog(ModuleDialog):
         pn_group.layout().addWidget(pn_hint)
         left_layout.addWidget(pn_group)
 
+        self.btn_measured = QPushButton("从实测数据导入…")
+        self.btn_measured.setToolTip("CSV/TXT：两列 频偏(Hz)、相噪(dBc/Hz)，允许一行表头。\nMAT：offsets 与 levels 数组。导入后可保存到模型库。")
+        self.btn_measured.clicked.connect(self._import_measured)
+        left_layout.addWidget(self.btn_measured)
+
         self.btn_run = QPushButton("计算 / 绘图")
         self.btn_run.setFixedHeight(34)
         self.btn_run.setStyleSheet(
@@ -334,6 +339,20 @@ class MixerModelDialog(ModuleDialog):
             f"L(f) → 随机相位噪声 φ[n] → 输出频谱裙边  |  "
             f"不含热噪声、非线性、变频损耗、LO 泄漏和杂散"
         )
+
+    def _import_measured(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入实测数据", "", "实测数据 (*.csv *.txt *.mat)")
+        if not path:
+            return
+        try:
+            from .measured_data import load_measured_mixer
+            from link_sim.ui.device_model_bindings import apply_device
+            model = load_measured_mixer(path, self._collect_cfg())
+            apply_device(self, model)
+            self._library_identity = (model.kind, model.name, model.description)
+            self.status.setText("已导入实测数据：" + path)
+        except Exception as exc:
+            QMessageBox.warning(self, "实测数据导入失败", str(exc))
 
     def _save(self):
         path, _ = QFileDialog.getSaveFileName(

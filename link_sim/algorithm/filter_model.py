@@ -455,6 +455,11 @@ class FilterModelDialog(ModuleDialog):
         vg.layout().addLayout(vf)
         lv.addWidget(vg)
 
+        self.btn_measured = QPushButton("从实测数据导入…")
+        self.btn_measured.setToolTip("CSV/TXT：单列冲激响应 h，或三列 频率(Hz)、增益(dB)、相位(deg)。\n频响导入生成 4096 点实数 FIR，测量范围外响应为零。\nMAT/NPZ：h 或 b/a/sos，可附 fs(Hz)；否则使用当前采样率。")
+        self.btn_measured.clicked.connect(self._import_measured)
+        lv.addWidget(self.btn_measured)
+
         self.btn_run = QPushButton("设计并绘制")
         self.btn_run.setFixedHeight(34)
         self.btn_run.setStyleSheet(
@@ -929,6 +934,20 @@ class FilterModelDialog(ModuleDialog):
         return tag
 
     # ── 保存 ──────────────────────────────────────────────
+    def _import_measured(self):
+        path, _ = QFileDialog.getOpenFileName(self, "导入实测数据", "", "实测数据 (*.csv *.txt *.mat *.npz)")
+        if not path:
+            return
+        try:
+            from .measured_data import load_measured_filter
+            from link_sim.ui.device_model_bindings import apply_device
+            model = load_measured_filter(path, float(self.e_fs.text())*1e6)
+            apply_device(self, model)
+            self._library_identity = (model.kind, model.name, model.description)
+            self.status.setText("已导入实测数据：" + path)
+        except Exception as exc:
+            QMessageBox.warning(self, "实测数据导入失败", str(exc))
+
     def _save(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "保存图像", "filter_model.png",

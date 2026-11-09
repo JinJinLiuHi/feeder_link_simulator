@@ -97,6 +97,10 @@ class NoiseNode(SignalNode):
     NODE_NAME, KIND = "加性白噪声", "awgn"
 
 
+class NoiseFloorNode(SignalNode):
+    NODE_NAME, KIND = "底噪模型", "noise"
+
+
 class FramedSourceNode(SignalNode):
     NODE_NAME, KIND = "按帧发射信号", "frame_source"
 
@@ -138,7 +142,7 @@ class ReceiverNode(SignalNode):
 
 
 NODE_CLASSES = {cls.KIND: cls for cls in (
-    SourceNode, DPDNode, DACNode, FilterNode, MixerNode, PANode, GainNode, FrequencyNode, NoiseNode,
+    SourceNode, DPDNode, DACNode, FilterNode, MixerNode, PANode, GainNode, FrequencyNode, NoiseNode, NoiseFloorNode,
     FramedSourceNode, TransmitRRCNode, ChannelNode, XPICNode, FastICANode, DownmixerNode,
     ReceiveADCNode, ReceiveRRCNode, SynchronizationNode, ReceiverNode)}
 
@@ -257,6 +261,7 @@ class StageDialog(QDialog):
                 "dac": "等效噪声使用原模型的估计量化噪声基底，自动匹配链路采样率；不叠加杂散。",
                 "filter": "在时域处理复数 I/Q。FIR/RRC 使用 h[n] 卷积，IIR 使用原系数递推。",
                 "mixer": "读取模型的相噪锚点，按输入 I/Q 的采样率和点数生成本振相噪，再逐点旋转。",
+                "noise": "按模型底噪密度和链路采样率生成复高斯白噪声，逐点叠加到输入。",
                 "pa": "按保存的 MP/GMP 系数计算非线性和记忆效应，保留信号幅度基准。",
             }[hint_kind])
             hint.setWordWrap(True)
@@ -352,6 +357,7 @@ class StageDialog(QDialog):
                 "filter": "加载滤波器模型后，使用其冲激响应 h[n] 或递推系数计算输出。",
                 "mixer": "加载混频器模型后，应用已保存的相噪锚点。",
                 "pa": "加载功放 MP/GMP 模型后，使用保存的辨识系数计算输出。",
+                "noise": "加载底噪模型后，以绝对噪声密度生成复高斯噪声并叠加到输入。",
                 "gain": "按设置的增益在时域逐点缩放复数 I/Q。",
                 "frequency": "对应信号源×复乘法的频移；请为频偏预留采样带宽。",
                 "awgn": "按输入有效区间平均功率生成复高斯噪声；种子固定时可复现。",
@@ -477,14 +483,14 @@ class WaveformWorkspace(QDialog):
                 rcParams["font.sans-serif"] = [family, "DejaVu Sans"]
                 rcParams["axes.unicode_minus"] = False
                 break
-        self.setWindowTitle("全链路波形仿真 · 发射端")
+        self.setWindowTitle("全链路仿真 · 发射端")
         self.resize(1300, 860)
         self.outputs = {}
         self.worker = None
         self.rebuilding = False
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 8, 10, 8)
-        heading = QLabel("全链路波形仿真  /  单通道与双极化收发")
+        heading = QLabel("全链路仿真  /  单通道与双极化收发")
         heading.setStyleSheet("font-size:18px;font-weight:600;color:#d5f3fa;padding:5px")
         root.addWidget(heading)
         self.edit_row = QWidget()

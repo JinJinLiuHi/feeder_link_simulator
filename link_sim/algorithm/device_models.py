@@ -10,7 +10,7 @@ from .pa_simulation_core import PAModel, load_model
 
 FORMAT = "feeder-link-device-model"
 VERSION = 1
-KINDS = {"pa": "功放", "dpd": "数字预失真", "adda": "ADC/DAC", "filter": "滤波器", "mixer": "混频器"}
+KINDS = {"pa": "功放", "dpd": "数字预失真", "adda": "ADC/DAC", "filter": "滤波器", "mixer": "混频器", "noise": "底噪模型"}
 MAX_BYTES = 32 * 1024**2
 IIR_IMPULSE_SAMPLES = 4096
 FILTER_DEFAULTS = dict(impl="外部系数", iir_type="Butterworth", fir_method="窗函数法", window="hamming",
@@ -103,6 +103,12 @@ def validate_behavior(model):
             raise ValueError("第 1 根杂散须与当前 ADC/DAC 模型的目标 SFDR 一致")
         if a:
             raise ValueError("ADC/DAC 行为模型以参数保存，不包含波形数组")
+    elif model.kind == "noise":
+        number(p, "fs", positive=True)
+        number(p, "density_dbfs_hz", -300, 0)
+        number(p, "seed", 0, 2147483647, integer=True)
+        if a:
+            raise ValueError("底噪模型以参数保存，不包含波形数组")
     elif model.kind == "mixer":
         fs = number(p, "fs", positive=True)
         duration = number(p, "sim_time", positive=True)
