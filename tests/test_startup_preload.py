@@ -46,6 +46,10 @@ class StartupPreloadTests(unittest.TestCase):
                 self.assertEqual(errors, [])
                 self.assertTrue(splash._finished)
                 self.assertEqual(opened, [splash.main_window])
+                self.assertLessEqual(splash.main_window.minimumSizeHint().height(), 780)
+                for page in splash.main_window.findChildren(LazyDialogPage):
+                    self.assertLess(page.minimumSizeHint().height(), 200)
+                    self.assertIs(page.content_scroll.widget(), page.dialog)
                 splash.finish(True)
                 self.assertEqual(len(opened), 1)
                 # Subsequent navigation must reuse the startup-created editors.
@@ -59,6 +63,9 @@ class StartupPreloadTests(unittest.TestCase):
                         tabs.setCurrentIndex(i)
                         tabs.widget(i).ensure_loaded()
                     self.app.processEvents()
+                    splash.main_window.resize(1536, 780)
+                    self.app.processEvents()
+                    self.assertEqual(splash.main_window.height(), 780)
         finally:
             splash.map_timeout.stop()
             if splash.main_window is not None:

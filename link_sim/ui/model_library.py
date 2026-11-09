@@ -87,7 +87,7 @@ class ModelLibraryDialog(QDialog):
             self.kind.setCurrentIndex(self.kind.findData(kind))
             self.kind.setEnabled(False)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("搜索模型名称")
+        self.search.setPlaceholderText("搜索模型编号或名称")
         row.addWidget(self.kind)
         row.addWidget(self.search, 1)
         refresh = QPushButton("刷新")
@@ -98,9 +98,10 @@ class ModelLibraryDialog(QDialog):
         self.location.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.location.setWordWrap(True)
         root.addWidget(self.location)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["名称", "器件类型", "保存时间（北京时间）"])
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["编号", "名称", "器件类型", "保存时间（北京时间）"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -114,12 +115,14 @@ class ModelLibraryDialog(QDialog):
         actions = QHBoxLayout()
         self.import_button = QPushButton("外部文件入库")
         self.export_button = QPushButton("导出所选模型")
+        self.delete_button = QPushButton("删除所选模型")
         switch = QPushButton("选择数据库…")
         actions.addWidget(self.import_button)
         actions.addWidget(self.export_button)
+        actions.addWidget(self.delete_button)
         actions.addWidget(switch)
         actions.addStretch()
-        self.load_button = QPushButton("加载模型" if kind else "打开模型")
+        self.load_button = QPushButton("加载模型" if kind else "查看详情")
         close = QPushButton("关闭")
         actions.addWidget(self.load_button)
         actions.addWidget(close)
@@ -130,6 +133,7 @@ class ModelLibraryDialog(QDialog):
         self.table.itemDoubleClicked.connect(self.load_selected)
         self.import_button.clicked.connect(self.import_file)
         self.export_button.clicked.connect(self.export_selected)
+        self.delete_button.clicked.connect(self.delete_selected)
         self.load_button.clicked.connect(self.load_selected)
         switch.clicked.connect(self.switch_database)
         close.clicked.connect(self.reject)
@@ -144,9 +148,10 @@ class ModelLibraryDialog(QDialog):
             self.selected_id = None
             self.load_button.setEnabled(False)
             self.export_button.setEnabled(False)
+            self.delete_button.setEnabled(False)
             for row, entry in enumerate(entries):
                 self.table.insertRow(row)
-                for col, text in enumerate((entry["name"], KINDS[entry["kind"]],
+                for col, text in enumerate((str(entry["id"]), entry["name"], KINDS[entry["kind"]],
                                             format_beijing_time(entry["created_at"]))):
                     item = QTableWidgetItem(text)
                     item.setData(Qt.ItemDataRole.UserRole, entry["id"])
@@ -160,11 +165,14 @@ class ModelLibraryDialog(QDialog):
         self.selected_model, self.selected_id = None, None
         self.load_button.setEnabled(False)
         self.export_button.setEnabled(False)
+        self.delete_button.setEnabled(False)
         items = self.table.selectedItems()
         if not items:
             return
         try:
             key = items[0].data(Qt.ItemDataRole.UserRole)
+            self.selected_id = key
+            self.delete_button.setEnabled(True)
             model = self.store.get(key)
             self.selected_model, self.selected_id = model, key
             arrays = "\n".join(f"{name}: {value.dtype}, 形状 {value.shape}" for name, value in model.arrays.items())
@@ -172,7 +180,7 @@ class ModelLibraryDialog(QDialog):
             if model.kind == "dpd":
                 pa = self.store.paired_power_amplifier(key)
                 pair_text = f"\n配对功放：{pa.name if pa else '当前库中未找到'}"
-            self.details.setPlainText(f"{model.name} · {KINDS[model.kind]}{pair_text}\n{arrays}\n参数：{json_text(model.parameters)}")
+            self.details.setPlainText(f"#{key} {model.name} · {KINDS[model.kind]}{pair_text}\n{arrays}\n参数：{json_text(model.parameters)}")
             self.load_button.setEnabled(True)
             self.export_button.setEnabled(True)
         except Exception as exc:
@@ -183,7 +191,10 @@ class ModelLibraryDialog(QDialog):
             try:
                 # Read again to avoid applying a record changed outside this dialog.
                 self.selected_model = self.store.get(self.selected_id)
-                self.accept()
+                if self.expected_kind is not None and self.isWindow():
+                    self.accept()
+                else:
+                    self.show_details()
             except Exception as exc:
                 QMessageBox.warning(self, "加载失败", str(exc))
 
@@ -203,6 +214,23 @@ class ModelLibraryDialog(QDialog):
                 choose_export(self, self.store.get(self.selected_id))
             except Exception as exc:
                 QMessageBox.warning(self, "导出失败", str(exc))
+
+    def delete_selected(self):
+        if self.selected_id is None:
+            return
+        key = self.selected_id
+        item = self.table.item(self.table.currentRow(), 1)
+        name = item.text() if item is not None else ""
+        answer = QMessageBox.question(self, "删除模型", f"删除模型 #{key}「{name}」及其系数？此操作不可撤销。",
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.store.delete(key)
+            self.refresh()
+        except Exception as exc:
+            QMessageBox.warning(self, "删除模型失败", str(exc))
 
     def switch_database(self):
         path, _ = QFileDialog.getSaveFileName(self, "选择现有或新建模型数据库", str(self.store.path),
@@ -256,7 +284,7 @@ class ModelActions(QWidget):
             paired_pa = from_pa(pa, f"功放 {pa.name}") if pa is not None else None
             key = save_named(model, self, paired_pa=paired_pa)
             if key is not None:
-                self.status.setText(f"已入库：{model.name}")
+                self.status.setText(f"已入库：#{key} {model.name}")
         except Exception as exc:
             QMessageBox.warning(self, "保存模型失败", str(exc))
 

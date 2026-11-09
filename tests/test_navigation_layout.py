@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "windows" if os.name == "nt" else "offs
 import unittest
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 from constellation_sim.ui.main_window import MainWindow
 
@@ -56,6 +57,32 @@ class NavigationLayoutTests(unittest.TestCase):
         for button in w.project_buttons:
             self.assertEqual(button.toolButtonStyle(), Qt.ToolButtonStyle.ToolButtonTextOnly)
             self.assertEqual(len(button.text().splitlines()), 4)
+
+    def test_fullscreen_can_be_toggled_with_f11_and_exited_with_escape(self):
+        w = self.window
+        w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        try:
+            w.showFullScreen()
+            w.activateWindow()
+            self.app.setActiveWindow(w)
+            w.setFocus()
+            self.app.processEvents()
+            self.assertTrue(w.isFullScreen())
+            self.assertTrue(w.fullscreen_action.isChecked())
+            QTest.keyClick(w, Qt.Key.Key_F11)
+            self.app.processEvents()
+            self.assertFalse(w.isFullScreen())
+            self.assertTrue(w.isMaximized())
+            QTest.keyClick(w, Qt.Key.Key_F11)
+            self.app.processEvents()
+            self.assertTrue(w.isFullScreen())
+            QTest.keyClick(w, Qt.Key.Key_Escape)
+            self.app.processEvents()
+            self.assertFalse(w.isFullScreen())
+            self.assertTrue(w.isMaximized())
+        finally:
+            w.showNormal()
+            w.hide()
 
 
 if __name__ == "__main__":

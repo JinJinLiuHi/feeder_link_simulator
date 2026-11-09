@@ -5,7 +5,7 @@ Displayed/exported frequencies are complex baseband. Frequency-offset blocks
 shift sampled spectra within the complex envelope.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import json
 from pathlib import Path
 
@@ -13,11 +13,10 @@ import numpy as np
 from scipy import signal
 
 from .device_models import DeviceModel, manifest, prepare_model_for_storage, unpack_manifest, to_pa
-from .pa_simulation_core import load_waveform, positive_rate, waveform
+from .pa_simulation_core import load_waveform, positive_rate, waveform, simulate
 from .adc_noise_core import calibrate_model_noise, generate_model_noise
 from .mixer_noise_core import generate_phase_noise
 from .pa_dpd_core import signature
-from .pa_rate_adapter import simulate_at_rate
 
 
 MAX_SAMPLES = 262144
@@ -27,10 +26,13 @@ KINDS = {"source": "基带信号源", "dpd": "数字预失真（DPD）", "dac": 
 KINDS.update(noise="底噪模型", frame_source="按帧发射信号", rrc_tx="发射 RRC", channel="无线信道",
              xpic="交叉极化信道（XPIC）", fastica="FastICA 双路分离", downmixer="下变频器",
              rx_adc="接收 ADC", rrc_rx="接收 RRC", sync="同步模块", sink="接收信号")
+KINDS.update(precomp="预补偿", lowpass="低通滤波")
 DEVICE_KINDS = {"noise": "noise","dpd": "dpd", "dac": "adda", "rx_adc": "adda", "filter": "filter",
-                "mixer": "mixer", "downmixer": "mixer", "pa": "pa", "rrc_tx": "filter", "rrc_rx": "filter"}
+                "mixer": "mixer", "downmixer": "mixer", "pa": "pa", "rrc_tx": "filter", "rrc_rx": "filter",
+                "precomp": "filter", "lowpass": "filter"}
 DUAL_KINDS = ("xpic", "fastica")
 SOURCE_KINDS = ("source", "frame_source")
+OBSERVATION_KINDS = (*SOURCE_KINDS, "pa", "sink")
 
 
 @dataclass
@@ -92,7 +94,8 @@ def default_settings(kind):
         return {}
     return {
         "source": dict(fs=100e6, count=16384, sps=8, amplitude=.2, seed=2025, modulation="QPSK"),
-        "frame_source": dict(symbol_rate=700e6, seed=2026, lane=0, segments=4, words=2),
+        "frame_source": dict(symbol_rate=700e6, seed=0, lane=0, segments=4,
+                             payload_symbols=1024, header_hex="1ACFFC1D"),
         "rrc_tx": {}, "rrc_rx": {}, "sink": {},
         "sync": dict(threshold=.4),
         "channel": dict(snr_db=35., gain_db=0., offset_hz=0., delay=0.),
@@ -106,20 +109,25 @@ def default_settings(kind):
 
 def default_link(dual=False):
     stages, edges, positions = [], [], {}
-    tx = ("frame_source", "rrc_tx", "dpd", "dac", "mixer", "pa", "channel")
-    rx = ("downmixer", "rx_adc", "rrc_rx", "sync", "sink")
+    tx = ("frame_source", "rrc_tx", "dpd", "tx_precomp", "dac", "dac_lowpass", "mixer", "pa", "channel")
+    rx = ("downmixer", "rx_precomp", "rx_adc", "adc_lowpass", "rrc_rx", "sync", "sink")
+    special = dict(tx_precomp=("precomp", "发射预补偿"), dac_lowpass=("lowpass", "低通滤波"),
+                   rx_precomp=("precomp", "接收预补偿"), adc_lowpass=("lowpass", "低通滤波"))
     lanes = ("A", "B") if dual else ("A",)
     for lane_index, lane in enumerate(lanes):
         previous = None
-        for column, kind in enumerate(tx + rx):
-            key = f"{lane}_{kind}"
+        for column, suffix in enumerate(tx + rx):
+            kind, label = special.get(suffix, (suffix, "发射 DAC" if suffix == "dac" else KINDS.get(suffix)))
+            key = f"{lane}_{suffix}"
             settings = default_settings(kind)
             if kind == "frame_source":
-                settings.update(lane=lane_index, seed=2026+lane_index)
-            label = "发射 DAC" if kind == "dac" else KINDS[kind]
-            stages.append(Stage(key, kind, f"{lane} · {label}", settings))
-            x = column*235 + (470 if dual and column >= len(tx) else 0)
-            positions[key] = [x, lane_index*250]
+                settings.update(lane=lane_index)
+            paired = dict(tx_precomp="dac_lowpass", dac_lowpass="tx_precomp", rx_precomp="adc_lowpass", adc_lowpass="rx_precomp")
+            if suffix in paired:
+                settings["paired_node"] = f"{lane}_{paired[suffix]}"
+            stages.append(Stage(key, kind, f"{lane} · {label}" if dual else label, settings))
+            x = column*180 + (360 if dual and column >= len(tx) else 0)
+            positions[key] = [x, lane_index*300]
             if previous and not (dual and kind == "downmixer"):
                 edges.append((previous, key))
             previous = key
@@ -129,7 +137,7 @@ def default_link(dual=False):
             if kind == "xpic":
                 settings["snr_db"] = 200.
             stages.append(Stage(kind, kind, KINDS[kind], settings))
-            positions[kind] = [(len(tx)+column)*235, 100]
+            positions[kind] = [(len(tx)+column)*180, 150]
         for port, lane in enumerate(lanes):
             edges.extend(((f"{lane}_channel", "xpic", 0, port),
                           ("xpic", "fastica", port, port),
@@ -258,10 +266,9 @@ def _check_model(stage, fs):
     if model.kind != DEVICE_KINDS.get(stage.kind):
         raise ValueError("所选模型的器件类型不匹配")
     # ADC and mixer noise use spectral densities on the input waveform's sampling grid.
-    rate_key = {"filter": "fs", "pa": "sample_rate", "dpd": "sample_rate"}.get(model.kind)
-    rate = model.parameters.get(rate_key)
-    if rate is not None and not np.isclose(fs, rate, rtol=1e-9, atol=1e-6):
-        if model.kind not in ("pa", "dpd"):
+    if model.kind == "filter":
+        rate = model.parameters["fs"]
+        if not np.isclose(fs, rate, rtol=1e-9, atol=1e-6):
             raise ValueError(f"模型采样率为 {rate/1e6:g} MHz，输入为 {fs/1e6:g} MHz；请修改信号源或更换模型")
     return model
 
@@ -276,7 +283,7 @@ def process_stage(stage, incoming, *, noise_stream=0, oscillator_stream=0):
     model = _check_model(stage, incoming.fs)
     if stage.kind in DEVICE_KINDS and model is None:
         return Wave(incoming.x.copy(), incoming.fs, incoming.carrier_hz, incoming.start,
-                    incoming.stop, ("未加载器件模型，当前为理想直通；双击加载或导入模型",), context=incoming.context)
+                    incoming.stop, ("未加载器件模型，当前为理想直通；双击从模型库加载",), context=incoming.context)
 
     p = stage.settings
     x, fs = incoming.x, incoming.fs
@@ -284,7 +291,18 @@ def process_stage(stage, incoming, *, noise_stream=0, oscillator_stream=0):
     carrier = incoming.carrier_hz
     notes = []
     added_error = None
-    if stage.kind == "filter":
+    if stage.kind == "precomp":
+        from .filter_inverse import inverse_taps
+        h, delay = inverse_taps(model)
+        y = np.convolve(x, h)
+        start += len(h)-1
+        stop += len(h)-1
+        notes.append(f"对应低通：{model.name}；通带逆响应时域卷积，{len(h)} 抽头；"
+                     f"目标级联延迟 {delay} 点，正则化 1e-6，最大逆增益 20 dB；深阻带不可恢复")
+    elif stage.kind in ("filter", "lowpass"):
+        if stage.kind == "lowpass":
+            from .filter_inverse import validate_lowpass
+            validate_lowpass(model)
         b = model.arrays.get("b")
         a = model.arrays.get("a", np.array([1.]))
         sos = model.arrays.get("sos")
@@ -294,11 +312,21 @@ def process_stage(stage, incoming, *, noise_stream=0, oscillator_stream=0):
             h = model.arrays.get("h")
             if h is None:
                 h = b / a[0]
-            y = np.convolve(x, h)[:len(x)]
+            y = np.convolve(x, h)
+            if stage.kind == "filter":
+                y = y[:len(x)]
+            else:
+                stop += len(h)-1
             start += len(h)-1
-            notes.append(f"FIR 时域卷积；起始 {len(h)-1} 点为启动瞬态；尾部未补零冲洗")
+            notes.append(f"FIR 时域卷积；起始 {len(h)-1} 点为启动瞬态；"+
+                         ("保留完整卷积尾部" if stage.kind == "lowpass" else "尾部未补零冲洗"))
         else:
             # The time-domain recurrence accounts for the entire IIR impulse response.
+            if stage.kind == "lowpass":
+                preview = prepare_model_for_storage(model).arrays["h"]
+                flush = len(preview)-1
+                x = np.pad(x, (0, flush))
+                stop += flush
             y = signal.sosfilt(sos / sos[:, 3:4], x) if sos is not None else signal.lfilter(b, a, x)
             notes.append("IIR 时域递推；输出包含启动瞬态，未自动判定稳定时间")
     elif stage.kind in ("dac", "rx_adc"):
@@ -323,20 +351,10 @@ def process_stage(stage, incoming, *, noise_stream=0, oscillator_stream=0):
                      f"频点间隔 {fs/len(x):.4g} Hz；相噪 RMS {np.std(phi[start:stop]):.5g} rad；时域逐点旋转")
     elif stage.kind in ("pa", "dpd"):
         pa = to_pa(model)
-        _, y, valid = simulate_at_rate(pa, x, fs)
+        _, y, valid = simulate(pa, x, fs)
         start += valid.start
         stop -= len(x) - valid.stop
-        notes.append(f"{model.name}；按保存系数计算，未重新归一化")
-        if pa.sample_rate is not None and not np.isclose(fs, pa.sample_rate, rtol=1e-9, atol=1e-6):
-            notes.append(f"跨采样率时域等效（近似）：辨识 {pa.sample_rate/1e6:g} MHz，链路 {fs/1e6:g} MHz；"
-                         f"每个模型延迟映射为 {fs/pa.sample_rate:.8g} 个链路采样点；保留原系数及物理记忆时间，"
-                         "采用分数延迟插值，不对输入信号降采样")
-            context = incoming.context
-            if context is not None and context.shaper is not None:
-                bandwidth = fs/context.shaper.samples_per_symbol*(1+context.shaper.rolloff)
-                if bandwidth > pa.sample_rate:
-                    notes.append(f"当前 RRC 理论双边带宽 {bandwidth/1e6:g} MHz，超过辨识数据采样率 "
-                                 f"{pa.sample_rate/1e6:g} MHz；宽带响应属于模型外推，需宽带实测数据验证")
+        notes.append(f"{model.name}；按保存系数直接计算，记忆延迟以当前信号采样点为单位；保留原始幅度")
     elif stage.kind == "noise":
         from .noise_core import generate_noise
         added_error = generate_noise(len(x), fs, model.parameters["density_dbfs_hz"], model.parameters["seed"] + noise_stream)
@@ -365,6 +383,7 @@ def process_stage(stage, incoming, *, noise_stream=0, oscillator_stream=0):
 
 def run_graph(stages, edges, *, target=None, progress=None, cancelled=None):
     ordered, parents = order_graph(stages, edges, target=target)
+    by_key = {s.key: s for s in stages}
     outputs, pending_dpd = {}, {}
     # Stable across full and partial runs, including B-only previews.
     noise_streams = {stage.key: i for i, stage in enumerate(s for s in stages if s.kind in ("dac", "rx_adc", "noise"))}
@@ -373,6 +392,15 @@ def run_graph(stages, edges, *, target=None, progress=None, cancelled=None):
         if cancelled and cancelled():
             raise InterruptedError("仿真已取消")
         try:
+            if stage.enabled and stage.kind in ("precomp", "lowpass"):
+                mate = by_key.get(stage.settings.get("paired_node"))
+                if mate is not None and mate.kind in ("precomp", "lowpass"):
+                    if stage.model is None and mate.model is not None:
+                        stage = replace(stage, model=mate.model)
+                    elif stage.model is not None and mate.model is not None:
+                        from .filter_inverse import filter_fingerprint
+                        if filter_fingerprint(stage.model) != filter_fingerprint(mate.model):
+                            raise ValueError("预补偿与配对低通须使用同一个低通模型")
             if stage.kind in SOURCE_KINDS:
                 if stage.kind == "frame_source":
                     from .framed_link import frame_source
@@ -442,14 +470,19 @@ def save_chain(path, stages, edges, positions):
     def portable_settings(stage):
         if stage.kind != "frame_source":
             return stage.settings
-        from .frame_config import frame_plan, portable_code
+        from .frame_config import frame_plan, portable_code, legacy_frame
         settings = dict(stage.settings)
         settings.pop("amplitude", None)
         rows = frame_plan(settings)
         for group in rows:
             for item in group:
                 item["code"] = portable_code(item["code"])
-        settings["business_frames"] = rows
+        if legacy_frame(settings):
+            settings["business_frames"] = rows
+        else:
+            settings.pop("business_frames", None)
+            settings.pop("words", None)
+            settings["business_frame"] = rows[0][0]
         return settings
     payload = dict(format="feeder-waveform-chain", version=1, edges=edges,
                    nodes=[dict(key=s.key, kind=s.kind, name=s.name, settings=portable_settings(s),
@@ -505,13 +538,13 @@ def load_chain(path):
 
 def export_wave(path, wave):
     """NPZ is compatible with the existing PA waveform importer (x/sampleRate)."""
-    from .waveform_spectrum import amplitude_spectrum
+    from .waveform_spectrum import amplitude_spectrum, signal_statistics
     frequency, level = amplitude_spectrum(wave.valid, wave.fs)
     np.savez_compressed(path, x=wave.x, sampleRate=wave.fs,
                         frequencyHz=frequency, spectrumDb=level,
                         validStart=wave.start, validStop=wave.stop, units="normalized IQ",
                         notes=np.asarray(wave.notes, dtype=str),
-                        metrics=json.dumps(wave.metrics),
+                        metrics=json.dumps(dict(wave.metrics, **signal_statistics(wave.valid))),
                        **({"transmittedBits": wave.context.bits} if wave.context is not None else {}),
                        **({"addedError": wave.added_error} if wave.added_error is not None else {}),
                        **({"receivedBits": wave.decoded_bits}

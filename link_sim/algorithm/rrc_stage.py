@@ -25,7 +25,7 @@ class SavedRRC(RRC):
 
 def transmit_shaper(stage):
     if stage.model is None:
-        raise ValueError("请先从模型库加载或导入 RRC 成形模型")
+        raise ValueError("请先从模型库加载 RRC 成形模型")
     return SavedRRC(stage.model)
 
 

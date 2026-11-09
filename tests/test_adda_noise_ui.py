@@ -77,7 +77,7 @@ class ADDAOriginalEditorTests(unittest.TestCase):
                 self.assertFalse(dialog.findChildren(QDoubleSpinBox))
                 labels = [b.text() for b in dialog.findChildren(QPushButton)]
                 self.assertIn("从模型库加载…", labels)
-                self.assertIn("导入模型文件…", labels)
+                self.assertNotIn("导入模型文件…", labels)
                 self.assertNotIn("恢复内置模型", labels)
                 dialog.accept()
                 self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
@@ -86,7 +86,7 @@ class ADDAOriginalEditorTests(unittest.TestCase):
                 dialog.deleteLater()
                 self.app.processEvents()
 
-    def test_canvas_observes_and_exports_the_added_error_separately(self):
+    def test_adc_error_remains_internal_and_only_three_observers_are_exposed(self):
         w = WaveformWorkspace()
         from waveform_fixtures import configure_workspace_rrc
         configure_workspace_rrc(w)
@@ -103,10 +103,9 @@ class ADDAOriginalEditorTests(unittest.TestCase):
                 time.sleep(.01)
             self.assertIsNone(w.worker)
             outputs = w.outputs
-            index = w.point.findData(node.id+"::error")
-            self.assertGreaterEqual(index, 0)
-            w.point.setCurrentIndex(index)
-            np.testing.assert_array_equal(w.observed_wave().x, outputs[node.id].added_error)
+            self.assertIsNotNone(outputs[node.id].added_error)
+            self.assertEqual(w.point.findData(node.id+"::error"), -1)
+            self.assertEqual(w.point.count(), 3)
         finally:
             w.close()
             w.deleteLater()

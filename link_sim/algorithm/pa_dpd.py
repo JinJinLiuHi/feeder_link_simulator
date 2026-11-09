@@ -16,7 +16,7 @@ from .pa_simulation_core import power_spectrum, spectrum_pair, positive_rate
 from .pa_ofdm import generate_ofdm, parameters
 from .pa_plot import draw_pa_spectrum
 from .pa_dpd_core import (
-    train_ila, evaluate_dpd, partition_capture, load_dpd, save_dpd, check_rate,
+    train_ila, evaluate_dpd, partition_capture, load_dpd, save_dpd, check_rate, validate_channel_bands,
 )
 
 
@@ -105,6 +105,13 @@ class PADPDWidget(PASimulationWidget):
         form.addRow("主信道带宽 (MHz)", self.main_bw)
         form.addRow("邻道带宽 (MHz)", self.adj_bw)
         form.addRow("邻道中心偏移 (MHz)", self.adj_offset)
+        self.channel_defaults = QPushButton("按 OFDM 带宽设置")
+        self.channel_defaults.setToolTip("主信道、邻道宽度和偏移均采用 OFDM 带宽；必要时提高过采样倍数以容纳两侧邻道。")
+        self.channel_defaults.clicked.connect(self.auto_channels)
+        form.addRow(self.channel_defaults)
+        self.channel_hint = QLabel()
+        self.channel_hint.setWordWrap(True)
+        form.addRow(self.channel_hint)
         note = QLabel("数据按 50% 训练、25% 选模、25% 最终测试划分；OFDM 保留完整符号。指标不添加显示噪声。")
         note.setWordWrap(True)
         form.addRow(note)
@@ -179,7 +186,11 @@ class PADPDWidget(PASimulationWidget):
             field.valueChanged.connect(self.invalidate)
         self.limit_enabled.toggled.connect(self.invalidate)
         self.bandwidth.currentTextChanged.connect(self.update_channels)
+        self.source.currentIndexChanged.connect(self.channel_source_changed)
+        for field in (self.main_bw, self.adj_bw, self.adj_offset, self.oversampling, self.rate):
+            field.valueChanged.connect(self.update_channel_hint)
         self.update_channels(self.bandwidth.currentText())
+        self.channel_source_changed()
         self.status.setText("导入功放模型，选择激励后训练 DPD；也可导入已有 DPD 验证。")
 
     def invalidate(self, *_):
@@ -208,6 +219,44 @@ class PADPDWidget(PASimulationWidget):
     def update_channels(self, text):
         for field in (self.main_bw, self.adj_bw, self.adj_offset):
             field.setValue(float(text))
+        if self.source.currentIndex() == 1:
+            self.auto_channels()
+
+    def channel_source_changed(self, *_):
+        generated = self.source.currentIndex() == 1
+        self.channel_defaults.setEnabled(generated)
+        if generated:
+            self.auto_channels()
+        else:
+            self.update_channel_hint()
+
+    def auto_channels(self):
+        if self.source.currentIndex() != 1:
+            return
+        bandwidth = float(self.bandwidth.currentText())
+        for field in (self.main_bw, self.adj_bw, self.adj_offset):
+            field.setValue(bandwidth)
+        base_rate = parameters(bandwidth*1e6, 1)["sampleRate"]
+        minimum = int(np.ceil(3*bandwidth*1e6/base_rate))
+        self.oversampling.setValue(max(self.oversampling.value(), minimum))
+        self.update_channel_hint()
+
+    def update_channel_hint(self, *_):
+        rate = self.rate.value()*1e6
+        b, a, offset = (field.value()*1e6 for field in (self.main_bw, self.adj_bw, self.adj_offset))
+        try:
+            validate_channel_bands(rate, b, a, offset)
+            self.channel_hint.setText(f"当前采样率 {rate/1e6:g} MHz；这组测量范围需要至少 {(2*offset+a)/1e6:g} MHz，设置有效。")
+            self.channel_hint.setStyleSheet("color:#77d9b4")
+        except ValueError as exc:
+            text = str(exc)
+            if self.source.currentIndex() == 1 and offset >= (b+a)/2:
+                base = parameters(float(self.bandwidth.currentText())*1e6, 1)["sampleRate"]
+                text += f"\n按当前主邻道设置，OFDM 过采样倍数至少为 {int(np.ceil((2*offset+a)/base))}。"
+            elif self.source.currentIndex() != 1 and self.input_wave is None:
+                text = "导入信号后，请按实际信号带宽设置主信道；邻道中心偏移至少为（主信道带宽＋邻道带宽）/2。"
+            self.channel_hint.setText(text)
+            self.channel_hint.setStyleSheet("color:#e9b96d")
 
     def set_model(self, model, label="当前已拟合功放", location=""):
         super().set_model(model, label, location)
@@ -223,13 +272,6 @@ class PADPDWidget(PASimulationWidget):
         self.limit_enabled.setChecked(limit is not None)
         if limit is not None:
             self.peak_limit.setValue(limit)
-        if model.sample_rate is not None:
-            from .pa_ofdm import PRESETS
-            for bandwidth, preset in PRESETS.items():
-                if np.isclose(parameters(bandwidth)["sampleRate"], model.sample_rate, rtol=1e-9):
-                    self.bandwidth.setCurrentText(f"{bandwidth/1e6:g}")
-                    self.oversampling.setValue(preset.oversampling)
-                    break
 
     def use_current_model(self):
         model = getattr(self.window(), "fitted_model", None)
@@ -277,13 +319,14 @@ class PADPDWidget(PASimulationWidget):
         bandwidth = float(self.bandwidth.currentText())*1e6
         rate = parameters(bandwidth, self.oversampling.value())["sampleRate"] if generated else self.rate.value()*1e6
         check_rate(self.model, rate)
+        validate_channel_bands(rate, self.main_bw.value()*1e6, self.adj_bw.value()*1e6, self.adj_offset.value()*1e6)
         if not generated and self.input_wave is None:
             raise ValueError("请先导入输入波形")
         measured = train and self.training_source.currentIndex() == 1
         if measured and self.measured_pair is None:
             raise ValueError("请先选择实测训练输入输出文件")
         if measured and not np.isclose(self.measured_rate, rate, rtol=1e-9):
-            raise ValueError("实测训练数据与功放模型采样率不一致")
+            raise ValueError("实测训练数据与当前输入信号采样率不一致")
         if not generated and self.rate.value() == self.rate.minimum():
             raise ValueError("请填写输入信号采样率")
         gain = 10**(self.gain_db.value()/20)*np.exp(1j*np.deg2rad(self.gain_phase.value()))

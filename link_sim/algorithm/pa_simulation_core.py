@@ -295,9 +295,8 @@ def load_waveform(path):
 
 
 def simulate(model, x, sample_rate):
-    rate = positive_rate(sample_rate)
-    if model.sample_rate is not None and not np.isclose(rate, model.sample_rate, rtol=1e-9, atol=1e-6):
-        raise ValueError(f"信号采样率与模型采样率 {model.sample_rate / 1e6:g} MHz 不一致；请提供匹配的输入波形")
+    """Evaluate saved coefficients with integer delays on the input sample grid."""
+    positive_rate(sample_rate)
     x = waveform(x)
     y = model.predict(x)
     valid = model.valid_slice(len(x))

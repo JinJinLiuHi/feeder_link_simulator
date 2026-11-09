@@ -23,17 +23,19 @@ class BusinessFrame:
 
 
 class MixedBurstFramer:
-    def __init__(self, sync_symbols, header_symbols, plan):
+    def __init__(self, sync_symbols, header_symbols, plan, payload_symbols=None):
         self.sync_symbols = sync_symbols
         self.header_symbols = header_symbols
         self.sync_symbol_count = len(sync_symbols)
         self.header_symbol_count = len(header_symbols)
-        self.header_spans, self.codeword_spans, self.frames = [], [], []
+        self.payload_symbols = payload_symbols
+        self.header_spans, self.codeword_spans, self.payload_spans, self.frames = [], [], [], []
         cursor = len(sync_symbols)
         codecs, modems = {}, {}
         for group in plan:
             self.header_spans.append((cursor, cursor+len(header_symbols)))
             cursor += len(header_symbols)
+            payload_start = cursor
             spans = []
             for item in group:
                 code, mod = item["code"], item["mod"]
@@ -61,6 +63,11 @@ class MixedBurstFramer:
                 self.frames.append(BusinessFrame(mapper, demapper, encoder, decoder, k, n, m, span))
                 cursor += length
             self.codeword_spans.append(tuple(spans))
+            if payload_symbols is not None:
+                if cursor-payload_start > payload_symbols:
+                    raise ValueError("业务帧超过设置的业务数据符号数")
+                cursor = payload_start+payload_symbols
+            self.payload_spans.append((payload_start, cursor))
         self.capacity_bits = sum(f.k for f in self.frames)
         self.total_symbols = cursor
         self.phase_tracker = PilotPhaseTracker(sync_symbols=sync_symbols)
@@ -70,7 +77,7 @@ class MixedBurstFramer:
     def __call__(self, info_bits):
         if info_bits.ndim != 1 or len(info_bits) != self.capacity_bits:
             raise ValueError(f"业务输入应为 {self.capacity_bits} bit")
-        result = torch.empty(self.total_symbols, dtype=torch.complex64)
+        result = torch.zeros(self.total_symbols, dtype=torch.complex64)
         result[:self.sync_symbol_count] = self.sync_symbols
         for start, stop in self.header_spans:
             result[start:stop] = self.header_symbols

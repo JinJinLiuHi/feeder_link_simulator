@@ -7,8 +7,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from PySide6.QtWidgets import QApplication, QPlainTextEdit
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox, QDialog
 
 from link_sim.algorithm.device_models import DeviceModel
 from link_sim.algorithm.model_store import ModelStore, format_beijing_time
@@ -18,6 +20,7 @@ from link_sim.ui.model_library import ModelLibraryDialog, SaveModelDialog
 from link_sim.ui.waveform_workspace import StageDialog
 from link_sim.algorithm.ad_model import ADDAModelDialog
 from link_sim.ui.device_model_bindings import apply_device
+from link_sim.ui.workspace import LazyDialogPage
 
 
 def device():
@@ -37,7 +40,7 @@ class ModelLibraryDisplayTests(unittest.TestCase):
         self.assertEqual(format_beijing_time("2026-11-04T02:04:05+08:00"), "2026-11-04 02:04:05")
         self.assertEqual(format_beijing_time("2026-11-03T18:04:05"), "2026-11-04 02:04:05")
 
-    def test_new_records_use_beijing_offset_and_library_has_three_columns(self):
+    def test_library_shows_stable_id_before_name_and_beijing_timestamp(self):
         with tempfile.TemporaryDirectory() as folder:
             store = ModelStore(Path(folder)/"models.sqlite3")
             key = store.save(device())
@@ -48,16 +51,100 @@ class ModelLibraryDisplayTests(unittest.TestCase):
                 db.execute("UPDATE models SET created_at=? WHERE id=?", ("2026-10-28T03:51:14+00:00", key))
             dialog = ModelLibraryDialog(store=store)
             try:
-                self.assertEqual(dialog.table.columnCount(), 3)
-                self.assertEqual([dialog.table.horizontalHeaderItem(i).text() for i in range(3)],
-                                 ["名称", "器件类型", "保存时间（北京时间）"])
-                self.assertEqual(dialog.table.item(0, 2).text(), "2026-10-28 11:51:14")
+                self.assertEqual(dialog.table.columnCount(), 4)
+                self.assertEqual([dialog.table.horizontalHeaderItem(i).text() for i in range(4)],
+                                 ["编号", "名称", "器件类型", "保存时间（北京时间）"])
+                self.assertEqual(dialog.table.item(0, 0).text(), str(key))
+                self.assertEqual(dialog.table.item(0, 1).text(), device().name)
+                self.assertEqual(dialog.table.item(0, 3).text(), "2026-10-28 11:51:14")
                 self.assertEqual(dialog.selected_id, key)
                 self.assertNotIn("hidden description", dialog.details.toPlainText())
                 self.assertIn("#12617B", dialog.styleSheet())
                 self.assertNotIn("background-color: #E6F1FB", dialog.styleSheet())
                 dialog.load_selected()
                 self.assertEqual(dialog.selected_model.parameters, device().parameters)
+            finally:
+                dialog.close()
+                dialog.deleteLater()
+                self.app.processEvents()
+
+    def test_delete_confirmation_refresh_and_search_by_stable_id(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = ModelStore(Path(folder)/"models.sqlite3")
+            first = store.save(device())
+            model = device()
+            model.name = "另一模型"
+            second = store.save(model)
+            dialog = ModelLibraryDialog(store=store)
+            try:
+                self.assertEqual(dialog.selected_id, second)
+                self.assertTrue(dialog.delete_button.isEnabled())
+                with patch("link_sim.ui.model_library.QMessageBox.question", return_value=QMessageBox.StandardButton.No):
+                    dialog.delete_button.click()
+                self.assertEqual(len(store.list()), 2)
+                with patch("link_sim.ui.model_library.QMessageBox.question", return_value=QMessageBox.StandardButton.Yes) as ask:
+                    dialog.delete_button.click()
+                    self.assertIn(f"#{second}", ask.call_args.args[2])
+                    self.assertEqual(dialog.selected_id, first)
+                    self.assertEqual(dialog.table.rowCount(), 1)
+                    dialog.delete_button.click()
+                self.assertEqual(dialog.table.rowCount(), 0)
+                self.assertIsNone(dialog.selected_id)
+                self.assertFalse(dialog.delete_button.isEnabled())
+                self.assertFalse(dialog.load_button.isEnabled())
+                self.assertFalse(dialog.export_button.isEnabled())
+                new_key = store.save(device())
+                self.assertGreater(new_key, second)
+                store.save(model)
+                dialog.search.setText(f"#{new_key}")
+                self.assertEqual(dialog.table.rowCount(), 1)
+                self.assertEqual(dialog.selected_id, new_key)
+                self.assertIn(f"#{new_key} ", dialog.details.toPlainText())
+            finally:
+                dialog.close()
+                dialog.deleteLater()
+                self.app.processEvents()
+
+    def test_embedded_library_double_click_and_details_button_do_not_hide_page(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = ModelStore(Path(folder)/"models.sqlite3")
+            key = store.save(device())
+            page = LazyDialogPage("link_sim.ui.model_library", "ModelLibraryDialog")
+            page.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+            try:
+                with patch("link_sim.ui.model_library.current_store", return_value=store):
+                    page.ensure_loaded()
+                page.show()
+                self.app.processEvents()
+                dialog = page.dialog
+                self.assertFalse(dialog.isWindow())
+                dialog.table.itemDoubleClicked.emit(dialog.table.item(0, 1))
+                self.app.processEvents()
+                self.assertTrue(dialog.isVisible())
+                self.assertTrue(dialog.table.isVisible())
+                self.assertEqual(dialog.selected_id, key)
+                self.assertIn(device().name, dialog.details.toPlainText())
+                dialog.load_button.click()
+                self.assertTrue(dialog.isVisible())
+                self.assertNotEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            finally:
+                page.close()
+                page.deleteLater()
+                self.app.processEvents()
+
+    def test_typed_picker_double_click_still_loads_model_and_closes_dialog(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = ModelStore(Path(folder)/"models.sqlite3")
+            key = store.save(device())
+            dialog = ModelLibraryDialog(kind="adda", store=store)
+            dialog.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+            try:
+                dialog.show()
+                self.app.processEvents()
+                dialog.table.itemDoubleClicked.emit(dialog.table.item(0, 1))
+                self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+                self.assertFalse(dialog.isVisible())
+                self.assertEqual(dialog.selected_id, key)
             finally:
                 dialog.close()
                 dialog.deleteLater()

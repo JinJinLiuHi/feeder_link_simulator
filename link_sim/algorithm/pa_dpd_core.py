@@ -17,8 +17,6 @@ def check_rate(pa, rate):
     rate = positive_rate(rate)
     if pa.role != "power_amplifier":
         raise ValueError("请选择功放正向模型")
-    if pa.sample_rate is not None and not np.isclose(pa.sample_rate, rate, rtol=1e-9):
-        raise ValueError("输入信号与功放模型采样率不一致")
     return rate
 
 
@@ -156,14 +154,28 @@ def train_ila(pa, train_x, validation_x, sample_rate, gain, *, model_type="memPo
     return DPDResult(best, gain, history, baseline_error, best_error)
 
 
-def channel_acpr(signal, sample_rate, main_bandwidth, adjacent_bandwidth,
-                 adjacent_offset, nfft=4096):
+def validate_channel_bands(sample_rate, main_bandwidth, adjacent_bandwidth, adjacent_offset):
+    """Validate the complete main/adjacent integration bands before generating data."""
     fs = positive_rate(sample_rate)
     b, a, offset = float(main_bandwidth), float(adjacent_bandwidth), float(adjacent_offset)
     if not all(np.isfinite(v) and v > 0 for v in (b, a, offset)):
         raise ValueError("主信道/邻道带宽及偏移必须为正数")
-    if offset < (b + a) / 2 or offset + a / 2 > fs / 2 or b > fs:
-        raise ValueError("主邻道不得重叠，且上下邻道须完全位于采样带宽内")
+    if b > fs:
+        raise ValueError(f"主信道带宽 {b/1e6:g} MHz 超过采样率 {fs/1e6:g} MHz，请减小主信道带宽或提高信号采样率。")
+    if offset < (b+a)/2:
+        raise ValueError(f"主邻道重叠：邻道中心偏移为 {offset/1e6:g} MHz，至少需要 {(b+a)/2e6:g} MHz。"
+                         "请增大邻道中心偏移，或减小主信道/邻道带宽。")
+    if 2*offset+a > fs:
+        raise ValueError(f"邻道超出采样带宽：当前采样率 {fs/1e6:g} MHz，可表示 ±{fs/2e6:g} MHz，"
+                         f"邻道外沿达到 ±{(offset+a/2)/1e6:g} MHz。\n"
+                         f"这些设置需要采样率至少 {(2*offset+a)/1e6:g} MHz；"
+                         "OFDM 信号可提高过采样倍数，也可减小测量带宽或邻道中心偏移。")
+    return fs, b, a, offset
+
+
+def channel_acpr(signal, sample_rate, main_bandwidth, adjacent_bandwidth,
+                 adjacent_offset, nfft=4096):
+    fs, b, a, offset = validate_channel_bands(sample_rate, main_bandwidth, adjacent_bandwidth, adjacent_offset)
     signal = waveform(signal)
     nfft = min(int(nfft), len(signal))
     f, density = welch(signal, fs=fs, nperseg=nfft, noverlap=nfft//2,
@@ -207,8 +219,6 @@ def evaluate_dpd(pa, dpd, x, sample_rate, gain, *, main_bandwidth,
     rate, gain = check_rate(pa, sample_rate), check_gain(gain)
     if dpd.role != "predistorter":
         raise ValueError("请选择预失真器模型")
-    if dpd.sample_rate is not None and not np.isclose(dpd.sample_rate, rate, rtol=1e-9):
-        raise ValueError("DPD 模型与输入信号采样率不一致")
     if not np.isfinite(reference_load) or reference_load <= 0:
         raise ValueError("参考阻抗必须为正数")
     recorded = dpd.fit_info.get("paSignature")

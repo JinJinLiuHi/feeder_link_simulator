@@ -3,10 +3,22 @@
 import unittest
 import numpy as np
 
-from link_sim.algorithm.waveform_spectrum import amplitude_spectrum
+from link_sim.algorithm.waveform_spectrum import amplitude_spectrum, signal_statistics
 
 
 class WaveformSpectrumTests(unittest.TestCase):
+    def test_iq_power_is_squared_complex_magnitude_and_energy_is_its_sum(self):
+        x = np.array([1+1j, 1-1j, -1+1j, -1-1j])/np.sqrt(2)
+        stats = signal_statistics(x)
+        self.assertAlmostEqual(stats["mean_power"], 1.)
+        self.assertAlmostEqual(stats["rms"], 1.)
+        self.assertAlmostEqual(stats["energy_sum"], 4.)
+        self.assertAlmostEqual(stats["papr_db"], 0.)
+        amplified = signal_statistics(2*x)
+        self.assertAlmostEqual(amplified["mean_power"], 4.)
+        self.assertAlmostEqual(amplified["rms"], 2.)
+        self.assertEqual(signal_statistics(np.zeros(4))["papr_db"], 0.)
+
     def test_signed_tones_and_absolute_amplitude(self):
         n, fs = 4096, 64e6
         t = np.arange(n)/fs

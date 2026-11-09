@@ -54,14 +54,16 @@ def parameters(bandwidth, oversampling=None):
 def _modulate(bandwidth, oversampling=None, seed=12345):
     """Unscaled samples and frequency grid; shared with round-trip tests."""
     info = parameters(bandwidth, oversampling)
+    from link_budget.algorithm.ber_core.diagnostics import configure_runtime_logging
+    configure_runtime_logging()
     try:
-        from .ber_core.diagnostics import configure_runtime_logging
-        configure_runtime_logging()
         import torch
         from sionna.phy.mapping import Mapper
         from sionna.phy.ofdm import ResourceGrid, ResourceGridMapper, OFDMModulator
-    except ImportError as exc:
-        raise RuntimeError("OFDM 生成需要 Sionna 2.x 与 PyTorch，请安装项目所用的通信仿真依赖") from exc
+    except (ImportError, OSError) as exc:
+        import sys
+        raise RuntimeError(f"OFDM 依赖导入失败：{exc}\n当前 Python：{sys.executable}\n"
+                           "请在该环境检查 torch 和 sionna 的安装及版本。") from exc
     size, count = info["fftSize"], info["activeCarriers"]
     # Oversampling is implemented in the OFDM grid: larger FFT and longer CP
     # at unchanged subcarrier spacing. This does not low-pass the serialized

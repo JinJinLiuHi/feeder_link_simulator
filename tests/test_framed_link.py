@@ -18,12 +18,46 @@ from waveform_fixtures import configured_link
 
 
 class FramedLinkTests(unittest.TestCase):
-    def test_source_rate_changes_automatically_adapt_pa_without_changing_grid(self):
+    def test_three_observers_only_contain_business_symbols_and_pa_gain_is_preserved(self):
+        from link_sim.algorithm.framed_link import business_output
+        from link_sim.algorithm.device_models import from_pa
+        from link_sim.algorithm.pa_simulation_core import PAModel
+        stages, edges, _ = configured_link()
+        gain = 1.7*np.exp(.4j)
+        next(s for s in stages if s.kind == "pa").model = from_pa(
+            PAModel([[gain]], "memPoly", 1, sample_rate=2.8e9), "复增益功放")
+        next(s for s in stages if s.kind == "channel").settings["snr_db"] = 200.
+        out = run_graph(stages, edges)
+        raw_source = out["A_frame_source"]
+        spans = [span for group in raw_source.context.framer.codeword_spans for span in group]
+        expected = np.concatenate([raw_source.x[a:b] for a, b in spans])
+        source = business_output(raw_source, "frame_source")
+        pa = business_output(out["A_pa"], "pa")
+        sink = business_output(out["A_sink"], "sink")
+        self.assertEqual(len(raw_source.x), 5248)
+        for wave in (source, pa, sink):
+            self.assertEqual(len(wave.x), 2048)
+            self.assertEqual(wave.fs, 700e6)
+        np.testing.assert_array_equal(source.x, expected)
+        # Matched RRC has finite-length ISI, but may not remove PA gain or phase.
+        self.assertLess(np.linalg.norm(pa.x-gain*expected)/np.linalg.norm(gain*expected), .01)
+        self.assertEqual(len(out), len(stages), "The observation branch must not add visible nodes")
+        np.testing.assert_array_equal(sink.decoded_bits, raw_source.context.bits)
+        np.testing.assert_allclose(sink.x, source.x, atol=.04)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder)/"pa.npz"
+            export_wave(path, pa)
+            with np.load(path) as data:
+                np.testing.assert_array_equal(data["x"], pa.x)
+                self.assertEqual(len(data["spectrumDb"]), 2048)
+
+    def test_source_rate_changes_use_pa_sample_delays_directly_without_changing_grid(self):
         from link_sim.algorithm.device_models import from_pa
         from link_sim.algorithm.pa_simulation_core import PAModel
         stages, edges, _ = configured_link()
         amplifier = next(s for s in stages if s.kind == "pa")
-        amplifier.model = from_pa(PAModel([[1], [.03]], "memPoly", 1, sample_rate=860.16e6), "跨采样率功放")
+        pa = PAModel([[1], [.03]], "memPoly", 1, sample_rate=860.16e6)
+        amplifier.model = from_pa(pa, "直接计算功放")
         for symbol_rate in (25e6, 100e6, 215.04e6, 700e6, 1e9):
             with self.subTest(symbol_rate=symbol_rate):
                 stages[0].settings["symbol_rate"] = symbol_rate
@@ -32,14 +66,15 @@ class FramedLinkTests(unittest.TestCase):
                 self.assertEqual(after.fs, 4*symbol_rate)
                 self.assertEqual(len(before.x), len(after.x))
                 self.assertTrue(np.isfinite(after.x).all())
-                if symbol_rate == 700e6:
-                    self.assertIn("宽带响应属于模型外推", "；".join(after.notes))
+                np.testing.assert_array_equal(after.x, pa.predict(before.x))
+                self.assertEqual(after.start-before.start, 1)
+                self.assertIn("按保存系数直接计算", "；".join(after.notes))
                 self.assertEqual(amplifier.model.parameters["sample_rate"], 860.16e6)
 
     def test_rrc_requires_a_loaded_model_and_source_can_run_independently(self):
         stages, edges, _ = default_link()
         self.assertEqual(set(run_graph(stages, edges, target="A_frame_source")), {"A_frame_source"})
-        with self.assertRaisesRegex(ValueError, "加载或导入 RRC"):
+        with self.assertRaisesRegex(ValueError, "加载 RRC"):
             run_graph(stages, edges, target="A_rrc_tx")
 
     def test_legacy_rrc_settings_migrate_to_saved_model(self):
@@ -61,7 +96,7 @@ class FramedLinkTests(unittest.TestCase):
         next(s for s in stages if s.kind == "fastica").settings["window_length"] = "invalid"
         edges = [e for e in edges if not (len(e) == 4 and e[1] == "fastica" and e[3] == 1)]
         outputs = run_graph(stages, edges, target="xpic")
-        self.assertEqual(len(outputs), 16)
+        self.assertEqual(len(outputs), 20)
         self.assertIn("A_frame_source", outputs)
         self.assertIn("B_frame_source", outputs)
         self.assertIn("xpic::B", outputs)
@@ -92,7 +127,7 @@ class FramedLinkTests(unittest.TestCase):
         for frame, modulation in zip(frames, ("BPSK", "QPSK", "16QAM")):
             frame["mod"] = mods[modulation]
         stages, edges, _ = configured_link()
-        stages[0].settings.update(segments=1, words=3, business_frames=[frames])
+        stages[0].settings = dict(symbol_rate=700e6, seed=2026, segments=1, words=3, business_frames=[frames])
         out = run_graph(stages, edges)
         source = out["A_frame_source"]
         self.assertEqual(source.fs, 700e6)
@@ -143,19 +178,19 @@ class FramedLinkTests(unittest.TestCase):
             original.write_text(Path(code["path"]).read_text(), encoding="utf-8")
             code["path"] = str(original)
             stages, edges, positions = configured_link()
-            stages[0].settings.update(segments=1, words=1,
-                                      business_frames=[[dict(mod=default_business_frame()["mod"], code=code)]])
+            stages[0].settings.update(segments=1, payload_symbols=100000,
+                                      business_frame=dict(mod=default_business_frame()["mod"], code=code))
             path = Path(folder)/"portable.json"
             save_chain(path, stages, edges, positions)
             original.unlink()
             loaded, _, _ = load_chain(path)
-            self.assertNotIn("path", loaded[0].settings["business_frames"][0][0]["code"])
+            self.assertNotIn("path", loaded[0].settings["business_frame"]["code"])
             actual = frame_source(loaded[0].settings)
             self.assertEqual(len(actual.context.bits), actual.metrics["information_bits"])
 
     def test_single_channel_recovers_bits_and_receiver_uses_no_payload_truth(self):
         stages, edges, _ = configured_link()
-        stages[6].settings.update(delay=.5, offset_hz=100., snr_db=35.)
+        next(s for s in stages if s.kind == "channel").settings.update(delay=.5, offset_hz=100., snr_db=35.)
         out = run_graph(stages, edges)
         received = out["A_sink"]
         np.testing.assert_array_equal(received.decoded_bits, out["A_frame_source"].context.bits)

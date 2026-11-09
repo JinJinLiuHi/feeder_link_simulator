@@ -4,8 +4,47 @@ import copy
 from functools import lru_cache
 import json
 from pathlib import Path
+import re
 
 from link_budget.algorithm.ber_core.catalog import session_catalog
+
+DEFAULT_HEADER_HEX = "1ACFFC1D"
+
+
+def legacy_frame(settings):
+    return not any(key in settings for key in ("business_frame", "payload_symbols", "header_hex")) and any(
+        key in settings for key in ("business_frames", "words", "k", "n", "modulation"))
+
+
+def header_hex(settings):
+    value = settings.get("header_hex", DEFAULT_HEADER_HEX)
+    if not isinstance(value, str):
+        raise ValueError("帧头须为十六进制文本")
+    value = re.sub(r"\s+", "", value).removeprefix("0x").removeprefix("0X").upper()
+    if not re.fullmatch(r"[0-9A-F]{1,256}", value):
+        raise ValueError("帧头须为 1～256 位十六进制字符，例如 1ACFFC1D")
+    return value
+
+
+def header_bits(settings):
+    """MSB first, four BPSK symbols per hex digit, retaining leading zeros."""
+    return [int(bit) for digit in header_hex(settings) for bit in f"{int(digit, 16):04b}"]
+
+
+def payload_size(settings):
+    from .waveform_chain import _number, MAX_SAMPLES
+    return None if legacy_frame(settings) else _number(settings, "payload_symbols", 1024, 1, MAX_SAMPLES, True)
+
+
+def editor_settings(settings):
+    """Editing an older mixed plan explicitly adopts the shared single-row form."""
+    result = copy.deepcopy(settings)
+    rows = result.pop("business_frames", None)
+    result.pop("words", None)
+    result.setdefault("business_frame", copy.deepcopy(rows[0][0]) if rows else default_business_frame())
+    result.setdefault("payload_symbols", 1024)
+    result.setdefault("header_hex", DEFAULT_HEADER_HEX)
+    return result
 
 
 def default_business_frame():
@@ -25,6 +64,11 @@ def symbol_rate(settings):
 def frame_plan(settings):
     from .waveform_chain import _number
     segments = _number(settings, "segments", 4, 1, 32, True)
+    if not legacy_frame(settings):
+        item = settings.get("business_frame", default_business_frame())
+        if not isinstance(item, dict) or not isinstance(item.get("mod"), dict) or not isinstance(item.get("code"), dict):
+            raise ValueError("业务帧须选择调制和编码")
+        return [[copy.deepcopy(item)] for _ in range(segments)]
     words = _number(settings, "words", 2, 1, 32, True)
     rows = settings.get("business_frames")
     if rows is None:
@@ -99,6 +143,8 @@ def portable_code(code):
 
 def frame_summary(settings):
     rows = frame_plan(settings)
+    field_size = payload_size(settings)
+    header_count = 64 if legacy_frame(settings) else len(header_bits(settings))
     information = coded = padding = data_symbols = 0
     frames = []
     for i, group in enumerate(rows):
@@ -113,7 +159,16 @@ def frame_summary(settings):
             frames.append(dict(segment=i+1, frame=j+1, information_bits=k, coded_bits=n,
                                symbols=length, padding_bits=length*m-n,
                                modulation=item["mod"]["name"], coding=item["code"]["name"]))
-    header = 1024 + 64*len(rows)
+    if field_size is not None and any(f["symbols"] > field_size for f in frames):
+        largest = max(f["symbols"] for f in frames)
+        raise ValueError(f"业务帧编码调制后需要 {largest:,} 个符号，超过设置的业务数据符号数 {field_size:,}")
+    field_symbols = data_symbols if field_size is None else field_size*len(rows)
+    header = 1024 + header_count*len(rows)
+    from .waveform_chain import MAX_SAMPLES
+    if header+field_symbols > MAX_SAMPLES:
+        raise ValueError("完整突发超过最大符号数，请减少每突发帧数或业务数据符号数")
     return dict(information_bits=information, coded_bits=coded, modulation_padding_bits=padding,
-                known_header_bits=header, total_symbols=header+data_symbols,
+                known_header_bits=header, header_symbols=header_count,
+                coded_symbols=data_symbols, payload_symbols=field_symbols,
+                zero_padding_symbols=field_symbols-data_symbols, total_symbols=header+field_symbols,
                 symbol_rate=symbol_rate(settings), frames=frames)

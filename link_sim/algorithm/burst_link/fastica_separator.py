@@ -78,8 +78,11 @@ class FastICAPolarizationSeparator:
 
     @torch.no_grad()
     def __call__(self, waveform_a: torch.Tensor, waveform_b: torch.Tensor, *,
-                 start_a: float, start_b: float) -> FastICASeparationResult:
-        """输入两路波形及外部同步起点，输出已判序的两路波形和诊断。"""
+                 start_a: float, start_b: float, training_mask: torch.Tensor | None = None) -> FastICASeparationResult:
+        """输入两路波形及外部同步起点，输出已判序的两路波形和诊断。
+
+        可选 training_mask 仅选择训练窗口内的有效样本；分离矩阵仍作用于完整波形。
+        """
         if (not isinstance(waveform_a, torch.Tensor)
                 or not isinstance(waveform_b, torch.Tensor)
                 or waveform_a.ndim != 1 or waveform_b.ndim != 1
@@ -95,7 +98,7 @@ class FastICAPolarizationSeparator:
         fit_end = fit_start + self.window_length_samples
         if fit_end > waveform_a.numel():
             raise ValueError("FastICA 训练窗口超出输入波形范围")
-        separated = self.ica(waveform_a, waveform_b, start=fit_start, end=fit_end)
+        separated = self.ica(waveform_a, waveform_b, start=fit_start, end=fit_end, training_mask=training_mask)
         if not separated.converged:
             raise RuntimeError("复数 FastICA 未收敛，不能将输出当作已分离数据")
 

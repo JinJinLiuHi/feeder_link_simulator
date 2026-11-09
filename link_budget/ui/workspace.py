@@ -2,7 +2,7 @@
 from importlib import import_module
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor,QPalette
-from PySide6.QtWidgets import QDialog,QFrame,QLabel,QSizePolicy,QVBoxLayout,QWidget
+from PySide6.QtWidgets import QDialog,QFrame,QLabel,QScrollArea,QSizePolicy,QVBoxLayout,QWidget
 from link_budget.ui.styles import APP_STYLE
 
 def _configure_charts():
@@ -32,7 +32,8 @@ class LazyDialogPage(QWidget):
             cls=getattr(import_module(self.module_name),self.class_name);dialog=cls(parent=self);dialog.setWindowFlags(Qt.WindowType.Widget);dialog.setWindowState(Qt.WindowState.WindowNoState);dialog.setModal(False);dialog.setMinimumSize(0,0);dialog.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Expanding);dialog.setStyleSheet(EMBEDDED_STYLE)
             wrapper=dialog.findChild(QFrame,"moduleContent")
             if wrapper:wrapper.setStyleSheet("QFrame#moduleContent{background:#07131f;color:#d9ecf7}")
-            self.layout.replaceWidget(self.placeholder,dialog);self.placeholder.deleteLater();self.dialog=dialog;dialog.show()
+            self.content_scroll=QScrollArea();self.content_scroll.setWidgetResizable(True);self.content_scroll.setFrameShape(QScrollArea.Shape.NoFrame);self.content_scroll.setWidget(dialog)
+            self.layout.replaceWidget(self.placeholder,self.content_scroll);self.placeholder.deleteLater();self.dialog=dialog;dialog.show()
         except Exception as exc:self.placeholder.setText(f"模块加载失败\n{type(exc).__name__}: {exc}");self.placeholder.setStyleSheet("color:#ff7b89;font-size:14px")
     def showEvent(self,event):super().showEvent(event);self.ensure_loaded()
 

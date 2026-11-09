@@ -13,6 +13,8 @@ def configured_link(dual=False):
     from link_sim.algorithm.waveform_chain import default_link
     stages, edges, positions = default_link(dual)
     for stage in stages:
+        if stage.kind == "frame_source":
+            stage.settings["seed"] = 2026+stage.settings["lane"]
         if stage.kind == "rrc_tx":
             stage.model = rrc_model()
     return stages, edges, positions
@@ -21,5 +23,7 @@ def configured_link(dual=False):
 def configure_workspace_rrc(workspace):
     from link_sim.algorithm.waveform_chain import model_to_dict
     for node in workspace.graph.all_nodes():
+        if node.KIND == "frame_source":
+            node.set_property("settings", dict(node.get_property("settings"), seed=2026), push_undo=False)
         if node.KIND == "rrc_tx":
             node.set_property("device_model", model_to_dict(rrc_model()), push_undo=False)

@@ -248,8 +248,9 @@ class WaveformChainTests(unittest.TestCase):
     def test_fixed_filter_sample_rate_mismatch_rejected(self):
         model = DeviceModel("filter", dict(FILTER_DEFAULTS, impl="FIR", fs=200e6),
                             dict(b=np.array([1., .2]), a=np.array([1.])))
-        with self.assertRaisesRegex(ValueError, "采样率"):
-            process_stage(Stage("f", "filter", "滤波器", {}, model), self.wave)
+        for kind in ("filter", "precomp", "lowpass"):
+            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "采样率"):
+                process_stage(Stage("f", kind, "滤波器", {}, model), self.wave)
 
     def test_frequency_shift_and_awgn_snr(self):
         n = 16384

@@ -254,7 +254,8 @@ class PASimulationWidget(QWidget):
                                    f"资源网格宽度 {info['occupiedGridHz']/1e6:g} MHz · FFT {info['fftSize']}")
         elif self.input_rate is not None:
             self.rate.setValue(self.input_rate / 1e6)
-        elif self.model is not None and self.model.sample_rate is not None:
+        elif (self.model is not None and self.model.sample_rate is not None
+              and self.rate.value() == self.rate.minimum()):
             self.rate.setValue(self.model.sample_rate / 1e6)
         self.invalidate()
 
@@ -315,7 +316,7 @@ class PASimulationWidget(QWidget):
         self.model = model
         self.model_file.setText(label)
         self.model_file.setToolTip(location)
-        rate = f"{model.sample_rate / 1e6:g} MHz" if model.sample_rate else "旧文件未记录，请确认输入采样率"
+        rate = f"{model.sample_rate / 1e6:g} MHz" if model.sample_rate else "未记录"
         cross = f"\n交叉包络偏移：±1…±{model.cross_depth} 点" if model.edge else ""
         info = model.fit_info
         diagnostic = "\n未记录辨识诊断"
@@ -323,7 +324,7 @@ class PASimulationWidget(QWidget):
             diagnostic = f"\n稳定辨识：有效方向 {info['rank']} / {info['terms']}"
             if "validationRmsPercent" in info:
                 diagnostic += f" · 验证误差 {info['validationRmsPercent']:.3f}%"
-        self.model_info.setText(f"{model.name}  |  记忆 {model.memory} 点  |  {model.degree} 阶\n采样率：{rate}{cross}{diagnostic}")
+        self.model_info.setText(f"{model.name}  |  记忆 {model.memory} 点  |  {model.degree} 阶\n记录采样率：{rate}{cross}{diagnostic}\n按当前信号采样点直接计算")
         self.model_info.setStyleSheet("font-size:8.5pt;color:#3A7D44;")
         self.source_changed()
 
@@ -369,10 +370,6 @@ class PASimulationWidget(QWidget):
         try:
             if self.model is None:
                 raise ValueError("请先导入功放模型")
-            if self.source.currentIndex() == 1 and self.model.sample_rate is not None:
-                requested = ofdm_parameters(float(self.bandwidth.currentText()) * 1e6, self.oversampling.value())["sampleRate"]
-                if not np.isclose(requested, self.model.sample_rate, rtol=1e-9, atol=1e-6):
-                    raise ValueError(f"OFDM 采样率 {requested/1e6:g} MHz 与模型 {self.model.sample_rate/1e6:g} MHz 不一致，请调整过采样倍数；也可先查看输入功率谱")
             x, rate, metadata = self.input_signal()
             x, y, valid = simulate(self.model, x, rate)
             load = self.load.value() if self.units.currentIndex() != 1 else None

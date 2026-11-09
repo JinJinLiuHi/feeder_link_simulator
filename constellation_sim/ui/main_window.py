@@ -25,7 +25,7 @@ from pathlib import Path
 import ephem
 
 try:
-    from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QSettings, QThread, QTimer, QUrl, Qt, Signal, Slot
+    from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPropertyAnimation, QSettings, QThread, QTimer, QUrl, Qt, Signal, Slot
     from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen
     from PySide6.QtWidgets import (
         QButtonGroup, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
@@ -1126,7 +1126,9 @@ class MainWindow(QMainWindow):
     filtered_frame_ready = Signal(dict, int)
 
     def __init__(self, *, load_map=True):
-        super().__init__(); self.setWindowTitle("星地馈电链路与星座仿真验证系统"); self.resize(1500, 900)
+        super().__init__(); self.setWindowTitle("星地馈电链路与星座仿真验证系统")
+        area = self.screen().availableGeometry()
+        self.resize(min(1500,max(1,area.width()-32)), min(900,max(1,area.height()-80)))
         icon_path=Path(__file__).with_name("assets")/"satellite.svg"
         if icon_path.exists(): self.setWindowIcon(QIcon(str(icon_path)))
         self.thread = self.worker = None; self.web_ready = False; self.pending_frame = None; self.transfer_queue = [];self.transfer_in_flight=False
@@ -1152,7 +1154,6 @@ class MainWindow(QMainWindow):
             self.load_map()
         self.resource_timer=QTimer(self); self.resource_timer.timeout.connect(self._update_runtime_status); self.resource_timer.start(1000)
         self.result_play_timer=QTimer(self); self.result_play_timer.timeout.connect(self._advance_result_playback)
-        self._enable_dark_title_bar(); QTimer.singleShot(0,self._enable_dark_title_bar)
 
     def load_map(self):
         self.web.setUrl(QUrl.fromLocalFile(str(WEB_FILE)))
@@ -1176,6 +1177,22 @@ class MainWindow(QMainWindow):
         # 原生窗口句柄在 show 后才稳定，避免首次出现白色标题栏。
         QTimer.singleShot(0,self._enable_dark_title_bar)
         QTimer.singleShot(0,self._enforce_splitter_layout)
+
+    def set_fullscreen(self, enabled):
+        if enabled:
+            self.showFullScreen()
+        else:
+            self.showMaximized()
+
+    def exit_fullscreen(self):
+        if self.isFullScreen():
+            self.set_fullscreen(False)
+
+    def changeEvent(self,event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and hasattr(self,"fullscreen_action"):
+            self.fullscreen_action.setChecked(self.isFullScreen())
+            self.exit_fullscreen_action.setEnabled(self.isFullScreen())
 
     def _apply_dashboard_style(self):
         self.setStyleSheet("""
@@ -1758,6 +1775,8 @@ class MainWindow(QMainWindow):
         simulation_menu=self.menuBar().addMenu("仿真"); simulation_menu.addActions([prepare_action,run_action,pause_action,stop_action])
         data_menu=self.menuBar().addMenu("数据"); data_menu.addActions([choose_result_path_action,open_result_action]); data_menu.addSeparator(); data_menu.addActions([export_action,compare_action])
         view_menu=self.menuBar().addMenu("视图"); view_menu.addActions([save_layout,restore_layout,reset_layout])
+        self.fullscreen_action=QAction("全屏显示",self);self.fullscreen_action.setCheckable(True);self.fullscreen_action.setShortcut("F11");self.fullscreen_action.triggered.connect(self.set_fullscreen);view_menu.addAction(self.fullscreen_action)
+        self.exit_fullscreen_action=QAction("退出全屏",self);self.exit_fullscreen_action.setShortcut("Esc");self.exit_fullscreen_action.setEnabled(False);self.exit_fullscreen_action.triggered.connect(self.exit_fullscreen);self.addAction(self.exit_fullscreen_action)
         self.left_panel_action=self._action("工程抽屉",QStyle.StandardPixmap.SP_DirIcon,lambda:self._toggle_panel(self.project_panel,300)); self.left_panel_action.setCheckable(True); self.left_panel_action.setChecked(False)
         self.right_panel_action=self._action("参数页",QStyle.StandardPixmap.SP_FileDialogContentsView,lambda:self._switch_primary_workspace("constellation",1)); self.right_panel_action.setVisible(False)
         view_menu.addSeparator(); view_menu.addAction(self.left_panel_action)

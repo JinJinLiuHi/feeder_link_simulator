@@ -2,7 +2,7 @@
 from importlib import import_module
 from concurrent.futures import ThreadPoolExecutor
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QLabel,QProgressBar,QSizePolicy,QTabWidget,QVBoxLayout,QWidget
+from PySide6.QtWidgets import QLabel,QProgressBar,QScrollArea,QSizePolicy,QTabWidget,QVBoxLayout,QWidget
 from link_sim.ui.styles import APP_STYLE
 
 def _configure_charts():
@@ -96,7 +96,11 @@ class LazyDialogPage(QWidget):
             dialog.setMinimumSize(0, 0)
             dialog.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
             dialog.setStyleSheet(EMBEDDED_STYLE)
-            self.layout.replaceWidget(self.placeholder, dialog)
+            self.content_scroll = QScrollArea()
+            self.content_scroll.setWidgetResizable(True)
+            self.content_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            self.content_scroll.setWidget(dialog)
+            self.layout.replaceWidget(self.placeholder, self.content_scroll)
             self.placeholder.hide()
             self.dialog = dialog
             self.loaded = True

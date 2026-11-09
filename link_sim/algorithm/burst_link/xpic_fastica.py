@@ -69,8 +69,8 @@ class ComplexFastICA:
 
     @torch.no_grad()
     def __call__(self, waveform_a: torch.Tensor, waveform_b: torch.Tensor, *,
-                 start: int, end: int) -> FastICAResult:
-        """训练区间为输入采样坐标中的 ``[start, end)``，输出与输入等长。"""
+                 start: int, end: int, training_mask: torch.Tensor | None = None) -> FastICAResult:
+        """在 [start, end) 中用可选掩码选择训练样本，输出保留完整时间轴。"""
         inputs = (waveform_a, waveform_b)
         if any(not isinstance(x, torch.Tensor) or x.ndim != 1 for x in inputs):
             raise TypeError("输入必须是两路一维 torch.Tensor")
@@ -93,6 +93,13 @@ class ComplexFastICA:
 
         samples = torch.stack(inputs, dim=1)
         segment = samples[start:end]
+        if training_mask is not None:
+            if (not isinstance(training_mask, torch.Tensor) or training_mask.dtype != torch.bool
+                    or training_mask.shape != waveform_a.shape or training_mask.device != waveform_a.device):
+                raise ValueError("训练掩码须与输入波形等长、同设备且为布尔类型")
+            segment = segment[training_mask[start:end]]
+            if segment.shape[0] < 128:
+                raise ValueError("FastICA 训练窗口内有效业务样本不足 128 点，请增加训练窗口或业务符号数")
         mean = segment.mean(dim=0)
         centered = segment - mean
         covariance = centered.mH @ centered / centered.shape[0]
@@ -130,7 +137,7 @@ class ComplexFastICA:
                 break
         unmixing = whitening @ weights
         separated = (samples - mean) @ unmixing
-        fit = separated[start:end]
+        fit = (segment-mean) @ unmixing
         power = fit.abs().square().mean(dim=0)
         pseudo = fit.square().mean(dim=0)
         kurtosis = (fit.abs().pow(4).mean(dim=0) / power.square()
