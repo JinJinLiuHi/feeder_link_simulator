@@ -22,6 +22,7 @@ class StartupWindow(QWidget):
         self.setFixedSize(500, 160)
         self.main_window = None
         self._finished = False
+        self._module_warnings = []
         self.setStyleSheet("""
             QWidget { background: #07131f; color: #d9ecf7; }
             QProgressBar { background: #0d2638; border: 1px solid #24516a; border-radius: 5px; }
@@ -104,8 +105,7 @@ class StartupWindow(QWidget):
         page = self._preload_pages[self._preload_index]
         page.load_finished.disconnect(self.preload_page_finished)
         if not ok:
-            self.fail(RuntimeError(f"链路仿真模块初始化失败：{page.class_name}\n{message}"))
-            return
+            self._module_warnings.append(f"{page.class_name}: {message}")
         self._preload_index += 1
         QTimer.singleShot(0, self.preload_next_page)
 
@@ -121,6 +121,8 @@ class StartupWindow(QWidget):
         self.main_window.web.loadFinished.disconnect(self.finish)
         if map_ok is None:
             self.main_window.status.setText("Cesium 地图仍在加载，可先使用其他功能")
+        if self._module_warnings:
+            self.main_window.status.setText(f"部分链路仿真页面未加载：{self._module_warnings[0]}")
         self.update_progress(100, "正在打开主界面…")
         self.main_window.showMaximized()
         self.close()
